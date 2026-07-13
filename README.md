@@ -6,11 +6,15 @@ A repeatable installer for a fish-like Zsh setup. It keeps your existing `.zshrc
 
 ## Install
 
-```sh
-# curl
-curl -fsSL https://raw.githubusercontent.com/kongjiadongyuan/zish/main/install-fishlike-zsh.sh | bash
+With `curl`:
 
-# wget
+```sh
+curl -fsSL https://raw.githubusercontent.com/kongjiadongyuan/zish/main/install-fishlike-zsh.sh | bash
+```
+
+With `wget`:
+
+```sh
 wget -qO- https://raw.githubusercontent.com/kongjiadongyuan/zish/main/install-fishlike-zsh.sh | bash
 ```
 

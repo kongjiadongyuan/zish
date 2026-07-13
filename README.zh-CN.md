@@ -6,11 +6,15 @@
 
 ## 安装
 
-```sh
-# curl
-curl -fsSL https://raw.githubusercontent.com/kongjiadongyuan/zish/main/install-fishlike-zsh.sh | bash
+使用 `curl`：
 
-# wget
+```sh
+curl -fsSL https://raw.githubusercontent.com/kongjiadongyuan/zish/main/install-fishlike-zsh.sh | bash
+```
+
+使用 `wget`：
+
+```sh
 wget -qO- https://raw.githubusercontent.com/kongjiadongyuan/zish/main/install-fishlike-zsh.sh | bash
 ```
 
