@@ -28,7 +28,7 @@
 
 set -euo pipefail
 
-INSTALLER_VERSION="2.0.0"
+INSTALLER_VERSION="2.1.0"
 MIN_ZSH_VERSION="5.4.2"
 
 # Immutable dependency pins. Update these deliberately and test as a set.
@@ -51,6 +51,7 @@ FLAG_NO_CHSH=0
 FLAG_FORCE=0
 FLAG_DRY_RUN=0
 FLAG_SKIP_PKGS=0
+FLAG_NON_INTERACTIVE=0
 
 HOME="${HOME:-$(cd ~ && pwd)}"
 ZDOTDIR="${ZDOTDIR:-$HOME}"
@@ -99,6 +100,51 @@ err()  { printf '%s[err]%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; }
 die()  { err "$*"; exit 1; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+can_prompt() {
+  (( ! FLAG_NON_INTERACTIVE )) || return 1
+  [[ -c /dev/tty ]] || return 1
+  [[ -t 0 || -t 1 || -t 2 ]]
+}
+
+ask_yes_no() {
+  local question="$1" default="$2" answer suffix
+  case "$default" in
+    yes) suffix='[Y/n]' ;;
+    no) suffix='[y/N]' ;;
+    *) die "invalid prompt default: $default" ;;
+  esac
+
+  if ! can_prompt; then
+    [[ "$default" == yes ]]
+    return
+  fi
+
+  while true; do
+    printf '%s %s ' "$question" "$suffix" >/dev/tty
+    if ! IFS= read -r answer </dev/tty; then
+      [[ "$default" == yes ]]
+      return
+    fi
+    case "$answer" in
+      '') [[ "$default" == yes ]]; return ;;
+      y|Y|yes|YES|Yes) return 0 ;;
+      n|N|no|NO|No) return 1 ;;
+      *) printf 'Please answer y or n.\n' >/dev/tty ;;
+    esac
+  done
+}
+
+require_replacement_approval() {
+  local path="$1"
+  (( FLAG_FORCE )) && return 0
+  warn "conflicting path: $path"
+  if ask_yes_no "Back up and replace this and any other conflicting managed paths?" no; then
+    FLAG_FORCE=1
+    return 0
+  fi
+  die "replacement declined: $path"
+}
 
 get_zsh_version() {
   have zsh || return 1
@@ -174,12 +220,13 @@ usage() {
 Usage: bash install-fishlike-zsh.sh [options]
 
 Options:
-  --chsh       Set zsh as the login shell after installation
-  --no-chsh    Never change the login shell (the default)
-  --force      Back up and replace conflicting files in the managed namespace
-  --dry-run    Show actions without downloading or changing files
-  --skip-pkgs  Do not invoke a system package manager
-  -h, --help   Show this help
+  --chsh            Answer yes to the login-shell question
+  --no-chsh         Answer no to the login-shell question
+  --force           Approve replacement of conflicting managed paths
+  --dry-run         Show actions without downloading or changing files
+  --skip-pkgs       Answer no to system package installation
+  --non-interactive  Never ask questions; use the shown defaults
+  -h, --help        Show this help
 
 Dependencies:
   zsh ${MIN_ZSH_VERSION} or newer and a working git executable
@@ -203,6 +250,7 @@ parse_args() {
       --force) FLAG_FORCE=1 ;;
       --dry-run) FLAG_DRY_RUN=1 ;;
       --skip-pkgs) FLAG_SKIP_PKGS=1 ;;
+      --non-interactive) FLAG_NON_INTERACTIVE=1 ;;
       -h|--help) usage ;;
       *) die "unknown flag: $1 (try --help)" ;;
     esac
@@ -253,6 +301,7 @@ can_root() {
   [[ "$(id -u)" -eq 0 ]] && return 0
   have sudo || return 1
   sudo -n true >/dev/null 2>&1 && return 0
+  (( FLAG_NON_INTERACTIVE )) && return 1
   # With `curl | bash`, stdin is the script stream while stdout/stderr still
   # point at the terminal from which sudo can obtain a password.
   [[ -t 0 || -t 1 || -t 2 ]] && return 0
@@ -284,6 +333,12 @@ install_system_packages() {
 
   if (( need_zsh == 0 && need_git == 0 && need_downloader == 0 )); then
     ok "system dependencies already present"
+    return 0
+  fi
+
+  if ! ask_yes_no "Install the missing system dependencies now?" yes; then
+    FLAG_SKIP_PKGS=1
+    warn "system package installation declined"
     return 0
   fi
 
@@ -438,9 +493,7 @@ install_fzf_userland() {
       ok "pinned fzf already present: $LOCAL_BIN/fzf $FZF_VERSION"
       return 0
     fi
-    if (( ! FLAG_FORCE )); then
-      die "unexpected path occupies $LOCAL_BIN/fzf (use --force to back it up)"
-    fi
+    require_replacement_approval "$LOCAL_BIN/fzf"
     move_to_backup "$LOCAL_BIN/fzf"
   fi
 
@@ -553,9 +606,7 @@ install_antidote_fresh() {
 }
 
 replace_antidote_install() {
-  if (( ! FLAG_FORCE )); then
-    die "refusing to replace conflicting Antidote path: $ANTIDOTE_DIR (use --force to back it up)"
-  fi
+  require_replacement_approval "$ANTIDOTE_DIR"
   move_to_backup "$ANTIDOTE_DIR"
   if (( FLAG_DRY_RUN )); then
     install_antidote_fresh
@@ -684,9 +735,7 @@ prepare_plugin_repo() {
     return 0
   fi
 
-  if (( ! FLAG_FORCE )); then
-    die "unexpected path occupies the plugin cache: $path (use --force to back it up)"
-  fi
+  require_replacement_approval "$path"
   move_to_backup "$path"
 }
 
@@ -757,8 +806,8 @@ write_managed_file_from_stdin() {
     die "refusing to replace non-file path: $dest"
   fi
   if [[ -f "$dest" ]]; then
-    if ! is_managed_artifact "$dest" && (( ! FLAG_FORCE )); then
-      die "refusing to replace unmanaged file: $dest (use --force to back it up)"
+    if ! is_managed_artifact "$dest"; then
+      require_replacement_approval "$dest"
     fi
     backup_file "$dest"
   fi
@@ -811,21 +860,21 @@ preflight_managed_artifact() {
   local dest="$1"
   [[ -L "$dest" ]] && die "refusing to replace symlink: $dest"
   [[ -e "$dest" && ! -f "$dest" ]] && die "managed target is not a regular file: $dest"
-  if [[ -f "$dest" ]] && ! is_managed_artifact "$dest" && (( ! FLAG_FORCE )); then
-    die "unmanaged file occupies $dest (use --force to back it up)"
+  if [[ -f "$dest" ]] && ! is_managed_artifact "$dest"; then
+    require_replacement_approval "$dest"
   fi
 }
 
 preflight_fzf() {
   [[ -e "$LOCAL_BIN/fzf" || -L "$LOCAL_BIN/fzf" ]] || return 0
   pinned_fzf_present && return 0
-  (( FLAG_FORCE )) || die "unexpected path occupies $LOCAL_BIN/fzf (use --force to back it up)"
+  require_replacement_approval "$LOCAL_BIN/fzf"
 }
 
 preflight_antidote() {
   [[ -e "$ANTIDOTE_DIR" || -L "$ANTIDOTE_DIR" ]] || return 0
   if [[ -L "$ANTIDOTE_DIR" || ! -d "$ANTIDOTE_DIR/.git" || ! -r "$ANTIDOTE_DIR/antidote.zsh" ]]; then
-    (( FLAG_FORCE )) || die "conflicting Antidote path: $ANTIDOTE_DIR (use --force to back it up)"
+    require_replacement_approval "$ANTIDOTE_DIR"
     return 0
   fi
   have git || return 0
@@ -833,11 +882,11 @@ preflight_antidote() {
   local remote dirty
   remote="$(git -C "$ANTIDOTE_DIR" remote get-url origin 2>/dev/null || true)"
   if ! antidote_remote_is_expected "$remote"; then
-    (( FLAG_FORCE )) || die "unexpected Antidote remote at $ANTIDOTE_DIR (use --force to back it up)"
+    require_replacement_approval "$ANTIDOTE_DIR"
   fi
   dirty="$(GIT_OPTIONAL_LOCKS=0 git -C "$ANTIDOTE_DIR" status --porcelain --untracked-files=normal 2>/dev/null || true)"
   if [[ -n "$dirty" ]]; then
-    (( FLAG_FORCE )) || die "Antidote checkout has local changes: $ANTIDOTE_DIR (use --force to back it up)"
+    require_replacement_approval "$ANTIDOTE_DIR"
   fi
 }
 
@@ -854,8 +903,8 @@ preflight() {
   if [[ -e "$ZSH_PLUGINS_ZSH" && ! -f "$ZSH_PLUGINS_ZSH" ]]; then
     die "plugin bundle target is not a regular file: $ZSH_PLUGINS_ZSH"
   fi
-  if [[ -f "$ZSH_PLUGINS_ZSH" ]] && ! is_managed_bundle "$ZSH_PLUGINS_ZSH" && (( ! FLAG_FORCE )); then
-    die "unmanaged file occupies $ZSH_PLUGINS_ZSH (use --force to back it up)"
+  if [[ -f "$ZSH_PLUGINS_ZSH" ]] && ! is_managed_bundle "$ZSH_PLUGINS_ZSH"; then
+    require_replacement_approval "$ZSH_PLUGINS_ZSH"
   fi
 }
 
@@ -1489,9 +1538,7 @@ lookup_login_shell() {
 }
 
 maybe_chsh() {
-  (( FLAG_NO_CHSH )) && { ok "login shell unchanged (--no-chsh)"; return 0; }
-  (( ! FLAG_CHSH )) && { ok "login shell unchanged (pass --chsh to opt in)"; return 0; }
-  have chsh || { warn "chsh is unavailable; login shell was not changed"; return 0; }
+  (( FLAG_NO_CHSH )) && { ok "login shell unchanged"; return 0; }
 
   local zsh_path target_user current
   zsh_path="$(command -v zsh)"
@@ -1502,18 +1549,29 @@ maybe_chsh() {
     target_user="$SUDO_USER"
   fi
 
+  current="$(lookup_login_shell "$target_user")"
+  if [[ "$current" == "$zsh_path" ]]; then
+    ok "login shell already set to $zsh_path"
+    return 0
+  fi
+
+  if (( ! FLAG_CHSH )); then
+    if ask_yes_no "Set Zsh as your login shell?" no; then
+      FLAG_CHSH=1
+    else
+      ok "login shell unchanged"
+      return 0
+    fi
+  fi
+
+  have chsh || { warn "chsh is unavailable; login shell was not changed"; return 0; }
+
   if [[ -r /etc/shells ]] && ! grep -qxF "$zsh_path" /etc/shells 2>/dev/null; then
     if can_root; then
       append_shell_to_etc_shells "$zsh_path"
     else
       warn "$zsh_path is not in /etc/shells; chsh may reject it"
     fi
-  fi
-
-  current="$(lookup_login_shell "$target_user")"
-  if [[ "$current" == "$zsh_path" ]]; then
-    ok "login shell already set to $zsh_path"
-    return 0
   fi
 
   log "changing login shell for $target_user: ${current:-unknown} -> $zsh_path"
@@ -1602,11 +1660,13 @@ verify() {
 main() {
   parse_args "$@"
   validate_paths
-  preflight
 
   printf '%s\n' "${C_BOLD}fishlike-zsh installer v${INSTALLER_VERSION}${C_RESET}"
-  printf '  home=%s\n  config=%s\n  dry_run=%s  force=%s  chsh=%s\n\n' \
-    "$HOME" "$FISHLIKE_CONFIG_DIR" "$FLAG_DRY_RUN" "$FLAG_FORCE" "$FLAG_CHSH"
+  printf '  target: %s\n' "$HOME"
+  (( FLAG_DRY_RUN )) && printf '  mode: preview only\n'
+  printf '\n'
+
+  preflight
 
   install_system_packages
   require_runtime_dependencies
@@ -1618,8 +1678,8 @@ main() {
   prepare_plugin_bundle
   update_zshrc_loader
   bootstrap_plugins
-  maybe_chsh
   verify
+  maybe_chsh
 
   echo
   ok "done. Open a new terminal, or run: exec zsh -l"
