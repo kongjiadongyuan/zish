@@ -48,12 +48,23 @@ Startup is read-only: re-run the installer to repair plugins. Local overrides: `
 ```text
 --dry-run           Preview actions without changing anything
 --install-deps      Install missing system packages (zsh/git/curl) via the package manager
---force             Replace conflicting managed paths after backup
+--force             Replace conflicting managed paths / confirm uninstall without prompts
+--uninstall         Remove the loader and managed trees (moves them into a backup folder)
 --chsh / --no-chsh  Answer the login-shell question
 --non-interactive   Never prompt; use defaults
 ```
 
 Missing system tools are printed with install hints by default. They are only auto-installed when you pass `--install-deps`.
+
+Uninstall example:
+
+```sh
+bash install-fishlike-zsh.sh --uninstall
+# or non-interactive:
+bash install-fishlike-zsh.sh --uninstall --force
+```
+
+Does **not** change your login shell, history, or `~/.zshrc.local`.
 
 ## Included
 
@@ -65,12 +76,14 @@ Missing system tools are printed with install hints by default. They are only au
 
 ## Behavior
 
-- Existing configuration is preserved and backed up before changes.
+- Existing configuration is preserved; backups go under `~/.local/share/fishlike-zsh/backup/<timestamp>/`.
 - Antidote is used only during install to materialize the plugin bundle; interactive shells do not load Antidote.
 - Plugins, fzf, and the `share/` payload are pinned and checksum-verified.
 - Managed text files are always mode `0600`.
+- Install writes a small state file at `~/.local/share/fishlike-zsh/state`.
 - Re-running the installer repairs missing or damaged managed files.
 - Verification uses a login interactive shell (`zsh -lic`).
 - The login shell is changed only after a successful install and explicit approval.
+- `--uninstall` moves managed trees aside; it never deletes history or local overrides.
 
 Requires Zsh 5.4.2 or newer and Git. Run `bash install-fishlike-zsh.sh --help` for details.

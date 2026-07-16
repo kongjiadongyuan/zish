@@ -11,18 +11,20 @@
 #
 # Safety properties:
 #   - existing ~/.zshrc content is preserved; a small loader block is added
-#   - every changed file is backed up first
+#   - backups under ~/.local/share/fishlike-zsh/backup/ (not beside originals)
 #   - unmanaged files in the installer namespace require --force
 #   - Antidote, plugins, fzf, and share/ payload are pinned and verified
 #   - plugin bundle is built once at install time; runtime only sources it
 #   - managed text files always use mode 0600
 #   - system packages install only with --install-deps
+#   - --uninstall removes managed trees + loader; never history/local/login shell
 #   - --dry-run performs no downloads and leaves no files behind
 #   - login shell is unchanged unless --chsh is explicitly passed
 #
 # Usage:
 #   bash install-fishlike-zsh.sh
 #   bash install-fishlike-zsh.sh --dry-run
+#   bash install-fishlike-zsh.sh --uninstall
 #   bash install-fishlike-zsh.sh --chsh
 #
 # Machine-local overrides can be placed in:
@@ -30,7 +32,7 @@
 
 set -euo pipefail
 
-INSTALLER_VERSION="2.4.0"
+INSTALLER_VERSION="2.5.0"
 MIN_ZSH_VERSION="5.4.2"
 
 # Immutable dependency pins. Update these deliberately and test as a set.
@@ -61,6 +63,7 @@ FLAG_FORCE=0
 FLAG_DRY_RUN=0
 FLAG_INSTALL_DEPS=0
 FLAG_NON_INTERACTIVE=0
+FLAG_UNINSTALL=0
 
 HOME="${HOME:-$(cd ~ && pwd)}"
 ZDOTDIR="${ZDOTDIR:-$HOME}"
@@ -77,10 +80,13 @@ ZSHRC="${ZDOTDIR}/.zshrc"
 LOCAL_RC="${ZDOTDIR}/.zshrc.local"
 SHARE_DIR=""
 
-# Use isolated locations so this installer cannot mutate another Antidote setup.
-ANTIDOTE_DIR="${FISHLIKE_ANTIDOTE_DIR:-${ANTIDOTE_DIR:-$XDG_DATA_HOME/fishlike-zsh/antidote}}"
+# Isolated data/cache roots (never touch a foreign Antidote install).
+FISHLIKE_DATA_DIR="${FISHLIKE_DATA_DIR:-$XDG_DATA_HOME/fishlike-zsh}"
+FISHLIKE_BACKUP_DIR="${FISHLIKE_BACKUP_DIR:-$FISHLIKE_DATA_DIR/backup}"
+FISHLIKE_STATE_FILE="${FISHLIKE_STATE_FILE:-$FISHLIKE_DATA_DIR/state}"
+ANTIDOTE_DIR="${FISHLIKE_ANTIDOTE_DIR:-${ANTIDOTE_DIR:-$FISHLIKE_DATA_DIR/antidote}}"
 ANTIDOTE_CACHE_DIR="${FISHLIKE_ANTIDOTE_HOME:-$XDG_CACHE_HOME/fishlike-zsh/plugins}"
-LOCAL_BIN="${FISHLIKE_BIN_DIR:-$XDG_DATA_HOME/fishlike-zsh/bin}"
+LOCAL_BIN="${FISHLIKE_BIN_DIR:-$FISHLIKE_DATA_DIR/bin}"
 
 TIMESTAMP="$(date +%Y%m%d%H%M%S)"
 MANAGED_MARKER="# Managed by install-fishlike-zsh.sh; edits may be replaced."
@@ -233,9 +239,10 @@ Usage: bash install-fishlike-zsh.sh [options]
 Options:
   --chsh            Answer yes to the login-shell question
   --no-chsh         Answer no to the login-shell question
-  --force           Approve replacement of conflicting managed paths
+  --force           Approve replacement / uninstall without extra prompts
   --dry-run         Show actions without downloading or changing files
   --install-deps    Install missing system packages via the package manager
+  --uninstall       Remove fishlike-zsh loader and managed trees
   --non-interactive  Never ask questions; use the shown defaults
   -h, --help        Show this help
 
@@ -246,8 +253,9 @@ Dependencies:
 Environment overrides:
   ZDOTDIR                 Directory containing .zshrc
   FISHLIKE_CONFIG_DIR     Managed configuration directory
+  FISHLIKE_DATA_DIR       Data root (antidote, fzf bin, backups, state)
   FISHLIKE_ANTIDOTE_DIR   Pinned Antidote checkout
-  FISHLIKE_ANTIDOTE_HOME  Isolated Antidote plugin cache
+  FISHLIKE_ANTIDOTE_HOME  Isolated plugin cache
   FISHLIKE_BIN_DIR        Isolated directory for the pinned fzf binary
   FISHLIKE_SHARE_DIR      Local share/ directory (config.zsh + plugins.txt)
   ZISH_SHARE_REF          Git ref for remote share/ fetch (default: main)
@@ -263,6 +271,7 @@ parse_args() {
       --force) FLAG_FORCE=1 ;;
       --dry-run) FLAG_DRY_RUN=1 ;;
       --install-deps) FLAG_INSTALL_DEPS=1 ;;
+      --uninstall) FLAG_UNINSTALL=1 ;;
       --non-interactive) FLAG_NON_INTERACTIVE=1 ;;
       -h|--help) usage ;;
       *) die "unknown flag: $1 (try --help)" ;;
@@ -286,6 +295,7 @@ validate_paths() {
   validate_path HOME "$HOME"
   validate_path ZDOTDIR "$ZDOTDIR"
   validate_path FISHLIKE_CONFIG_DIR "$FISHLIKE_CONFIG_DIR"
+  validate_path FISHLIKE_DATA_DIR "$FISHLIKE_DATA_DIR"
   validate_path FISHLIKE_ANTIDOTE_DIR "$ANTIDOTE_DIR"
   validate_path FISHLIKE_ANTIDOTE_HOME "$ANTIDOTE_CACHE_DIR"
   validate_path FISHLIKE_BIN_DIR "$LOCAL_BIN"
@@ -402,6 +412,7 @@ install_system_packages() {
     return 0
   fi
 
+  # Automated matrix kept small: apt, dnf, pacman. Others print hints.
   if have apt-get; then
     local apt_pkgs=()
     (( need_zsh )) && apt_pkgs+=(zsh)
@@ -417,32 +428,15 @@ install_system_packages() {
     (( need_git )) && dnf_pkgs+=(git)
     (( need_downloader )) && dnf_pkgs+=(curl ca-certificates)
     ((${#dnf_pkgs[@]})) && as_root dnf install -y "${dnf_pkgs[@]}"
-  elif have yum; then
-    local yum_pkgs=()
-    (( need_zsh )) && yum_pkgs+=(zsh)
-    (( need_git )) && yum_pkgs+=(git)
-    (( need_downloader )) && yum_pkgs+=(curl ca-certificates)
-    ((${#yum_pkgs[@]})) && as_root yum install -y "${yum_pkgs[@]}"
   elif have pacman; then
     local pacman_pkgs=()
     (( need_zsh )) && pacman_pkgs+=(zsh)
     (( need_git )) && pacman_pkgs+=(git)
     (( need_downloader )) && pacman_pkgs+=(curl ca-certificates)
     ((${#pacman_pkgs[@]})) && as_root pacman -S --needed --noconfirm "${pacman_pkgs[@]}"
-  elif have zypper; then
-    local zypper_pkgs=()
-    (( need_zsh )) && zypper_pkgs+=(zsh)
-    (( need_git )) && zypper_pkgs+=(git)
-    (( need_downloader )) && zypper_pkgs+=(curl ca-certificates)
-    ((${#zypper_pkgs[@]})) && as_root zypper --non-interactive install "${zypper_pkgs[@]}"
-  elif have apk; then
-    local apk_pkgs=()
-    (( need_zsh )) && apk_pkgs+=(zsh)
-    (( need_git )) && apk_pkgs+=(git)
-    (( need_downloader )) && apk_pkgs+=(curl ca-certificates)
-    ((${#apk_pkgs[@]})) && as_root apk add --no-cache "${apk_pkgs[@]}"
   else
-    warn "no supported package manager detected"
+    warn "no automated package manager support here; install zsh/git/curl manually"
+    suggest_system_packages "$need_zsh" "$need_git" "$need_downloader"
   fi
 }
 
@@ -587,13 +581,18 @@ install_fzf_userland() {
   ok "fzf installed and verified: $LOCAL_BIN/fzf"
 }
 
+# Backups live under FISHLIKE_BACKUP_DIR/<timestamp>/, never next to the original.
 next_backup_path() {
-  local source="$1" candidate="${1}.bak.${TIMESTAMP}" suffix=0
+  local source="$1" safe candidate suffix=0
+  safe="$(printf '%s' "${source#/}" | tr '/' '_')"
+  [[ -n "$safe" ]] || safe="path"
+  candidate="$FISHLIKE_BACKUP_DIR/$TIMESTAMP/$safe"
   while [[ -e "$candidate" || -L "$candidate" ]]; do
     suffix=$((suffix + 1))
-    candidate="${source}.bak.${TIMESTAMP}.${suffix}"
+    candidate="$FISHLIKE_BACKUP_DIR/$TIMESTAMP/${safe}.${suffix}"
   done
-  printf '%s\n' "$candidate"
+  printf '%s
+' "$candidate"
 }
 
 backup_file() {
@@ -601,14 +600,30 @@ backup_file() {
   [[ -e "$source" || -L "$source" ]] || return 0
   backup="$(next_backup_path "$source")"
   log "backup $source -> $backup"
-  run cp -a "$source" "$backup"
+  if (( FLAG_DRY_RUN )); then
+    return 0
+  fi
+  mkdir -p "$(dirname "$backup")"
+  cp -a "$source" "$backup"
 }
 
 move_to_backup() {
   local source="$1" backup
+  [[ -e "$source" || -L "$source" ]] || return 0
   backup="$(next_backup_path "$source")"
-  log "move conflicting path $source -> $backup"
-  run mv "$source" "$backup"
+  log "move $source -> $backup"
+  if (( FLAG_DRY_RUN )); then
+    return 0
+  fi
+  mkdir -p "$(dirname "$backup")"
+  mv "$source" "$backup"
+}
+
+is_fishlike_owned_path() {
+  case "$1" in
+    */fishlike-zsh|*/fishlike-zsh/*) return 0 ;;
+    *) return 1 ;;
+  esac
 }
 
 antidote_remote_is_expected() {
@@ -829,37 +844,6 @@ content_equals_file() {
   [[ -f "$dest" ]] && cmp -s "$dest" <(printf '%s' "$content")
 }
 
-write_managed_file_from_stdin() {
-  local dest="$1" content
-  content="$(cat; printf '\034')"
-  content="${content%$'\034'}"
-
-  if content_equals_file "$dest" "$content"; then
-    ok "unchanged $dest"
-    return 0
-  fi
-
-  if [[ -L "$dest" ]]; then
-    die "refusing to replace symlink: $dest"
-  fi
-  if [[ -e "$dest" && ! -f "$dest" ]]; then
-    die "refusing to replace non-file path: $dest"
-  fi
-  if [[ -f "$dest" ]]; then
-    if ! is_managed_artifact "$dest"; then
-      require_replacement_approval "$dest"
-    fi
-    backup_file "$dest"
-  fi
-
-  if (( FLAG_DRY_RUN )); then
-    log "would write managed file $dest"
-    return 0
-  fi
-
-  atomic_write_content "$dest" "$content"
-  ok "wrote $dest"
-}
 
 count_loader_starts() {
   local file="$1" a b
@@ -1307,6 +1291,133 @@ update_zshrc_loader() {
   ok "updated loader in $ZSHRC"
 }
 
+write_state_file() {
+  if (( FLAG_DRY_RUN )); then
+    log "would write state $FISHLIKE_STATE_FILE"
+    return 0
+  fi
+  mkdir -p "$(dirname "$FISHLIKE_STATE_FILE")"
+  cat >"$FISHLIKE_STATE_FILE" <<EOF
+# fishlike-zsh install state v${INSTALLER_VERSION}
+version=${INSTALLER_VERSION}
+installed_at=${TIMESTAMP}
+config_dir=${FISHLIKE_CONFIG_DIR}
+data_dir=${FISHLIKE_DATA_DIR}
+backup_dir=${FISHLIKE_BACKUP_DIR}
+plugin_cache=${ANTIDOTE_CACHE_DIR}
+antidote_dir=${ANTIDOTE_DIR}
+bin_dir=${LOCAL_BIN}
+zshrc=${ZSHRC}
+local_rc=${LOCAL_RC}
+env=${FISHLIKE_ENV}
+config=${FISHLIKE_CONFIG}
+plugins_txt=${ZSH_PLUGINS_TXT}
+plugins_zsh=${ZSH_PLUGINS_ZSH}
+EOF
+  chmod 0600 "$FISHLIKE_STATE_FILE"
+  ok "wrote state $FISHLIKE_STATE_FILE"
+}
+
+remove_zshrc_loader() {
+  [[ -f "$ZSHRC" ]] || return 0
+  local starts ends output='' line in_block=0 found=0
+  starts="$(count_loader_starts "$ZSHRC")"
+  ends="$(count_loader_ends "$ZSHRC")"
+  if (( starts == 0 )); then
+    ok "no fishlike-zsh loader in $ZSHRC"
+    return 0
+  fi
+  (( starts == ends && starts <= 1 )) || die "malformed fishlike-zsh block in $ZSHRC; fix manually"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if is_loader_start_line "$line"; then
+      (( in_block == 0 && found == 0 )) || die "duplicate fishlike-zsh block in $ZSHRC"
+      in_block=1
+      found=1
+    elif is_loader_end_line "$line"; then
+      (( in_block == 1 )) || die "unmatched fishlike-zsh end marker in $ZSHRC"
+      in_block=0
+    elif (( ! in_block )); then
+      output+="$line"$'\n'
+    fi
+  done <"$ZSHRC"
+  (( in_block == 0 && found == 1 )) || die "incomplete fishlike-zsh block in $ZSHRC"
+
+  while [[ "$output" == *$'\n\n\n'* ]]; do
+    output="${output//$'\n\n\n'/$'\n\n'}"
+  done
+
+  backup_file "$ZSHRC"
+  if (( FLAG_DRY_RUN )); then
+    log "would remove fishlike-zsh loader from $ZSHRC"
+    return 0
+  fi
+  atomic_write_content "$ZSHRC" "$output"
+  ok "removed loader from $ZSHRC"
+}
+
+uninstall_fishlike() {
+  printf '%s\n' "${C_BOLD}fishlike-zsh uninstall v${INSTALLER_VERSION}${C_RESET}"
+  printf '  target: %s\n\n' "$HOME"
+
+  local -a victims=()
+  local p
+  for p in \
+      "$FISHLIKE_CONFIG_DIR" \
+      "$ANTIDOTE_CACHE_DIR" \
+      "$ANTIDOTE_DIR" \
+      "$LOCAL_BIN" \
+      "$FISHLIKE_STATE_FILE"; do
+    if [[ -e "$p" || -L "$p" ]]; then
+      if is_fishlike_owned_path "$p" || [[ "$p" == "$FISHLIKE_STATE_FILE" ]]; then
+        victims+=("$p")
+      else
+        warn "skipping path outside fishlike-zsh namespace: $p"
+      fi
+    fi
+  done
+
+  printf 'Will remove the fishlike-zsh loader from:\n  %s\n' "$ZSHRC"
+  printf 'Will move managed paths into %s/%s/:\n' "$FISHLIKE_BACKUP_DIR" "$TIMESTAMP"
+  if ((${#victims[@]})); then
+    for p in "${victims[@]}"; do
+      printf '  %s\n' "$p"
+    done
+  else
+    printf '  (no managed trees found)\n'
+  fi
+  printf '\nWill NOT touch:\n'
+  printf '  %s\n' "$LOCAL_RC" "${HISTFILE:-$HOME/.zsh_history}" "login shell" "system packages"
+  printf '  prior backups under %s\n\n' "$FISHLIKE_BACKUP_DIR"
+
+  if (( ! FLAG_FORCE )); then
+    if ! ask_yes_no "Proceed with uninstall?" no; then
+      die "uninstall declined"
+    fi
+  fi
+
+  remove_zshrc_loader
+
+  for p in "${victims[@]}"; do
+    move_to_backup "$p"
+  done
+
+  for p in \
+      "$(dirname "$LOCAL_BIN")" \
+      "$(dirname "$ANTIDOTE_DIR")" \
+      "$(dirname "$ANTIDOTE_CACHE_DIR")"; do
+    if [[ -d "$p" ]] && is_fishlike_owned_path "$p" && [[ "$p" != "$FISHLIKE_BACKUP_DIR" ]]; then
+      if (( ! FLAG_DRY_RUN )); then
+        rmdir "$p" 2>/dev/null || true
+      fi
+    fi
+  done
+
+  ok "uninstall complete"
+  printf '  backups: %s/%s\n' "$FISHLIKE_BACKUP_DIR" "$TIMESTAMP"
+  printf '  open a new terminal or: exec zsh -l\n'
+}
+
 append_shell_to_etc_shells() {
   local shell_path="$1"
   if (( FLAG_DRY_RUN )); then
@@ -1467,10 +1578,19 @@ main() {
   parse_args "$@"
   validate_paths
 
-  printf '%s\n' "${C_BOLD}fishlike-zsh installer v${INSTALLER_VERSION}${C_RESET}"
-  printf '  target: %s\n' "$HOME"
-  (( FLAG_DRY_RUN )) && printf '  mode: preview only\n'
-  printf '\n'
+  if (( FLAG_UNINSTALL )); then
+    uninstall_fishlike
+    return 0
+  fi
+
+  printf '%s
+' "${C_BOLD}fishlike-zsh installer v${INSTALLER_VERSION}${C_RESET}"
+  printf '  target: %s
+' "$HOME"
+  (( FLAG_DRY_RUN )) && printf '  mode: preview only
+'
+  printf '
+'
 
   preflight
 
@@ -1484,12 +1604,19 @@ main() {
   build_plugin_bundle
   update_zshrc_loader
   verify
+  write_state_file
   maybe_chsh
 
   echo
   ok "done. Open a new terminal, or run: exec zsh -l"
-  printf '  managed config: %s\n' "$FISHLIKE_CONFIG_DIR"
-  printf '  local overrides: %s\n' "$LOCAL_RC"
+  printf '  managed config: %s
+' "$FISHLIKE_CONFIG_DIR"
+  printf '  backups:        %s
+' "$FISHLIKE_BACKUP_DIR"
+  printf '  local overrides: %s
+' "$LOCAL_RC"
+  printf '  uninstall:      bash install-fishlike-zsh.sh --uninstall
+'
 }
 
 main "$@"

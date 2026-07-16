@@ -48,12 +48,23 @@ bash install-fishlike-zsh.sh
 ```text
 --dry-run           只预览，不改动文件
 --install-deps      用系统包管理器安装缺失的 zsh/git/curl
---force             备份后替换冲突的托管路径
+--force             替换冲突路径 / 卸载时不再二次确认
+--uninstall         移除 loader 与托管目录（移入备份目录，非静默 rm）
 --chsh / --no-chsh  回答是否修改登录 Shell
 --non-interactive   不提问，使用默认选项
 ```
 
 默认只打印缺失依赖与安装示例；加上 `--install-deps` 才会自动调包管理器。
+
+卸载示例：
+
+```sh
+bash install-fishlike-zsh.sh --uninstall
+# 非交互：
+bash install-fishlike-zsh.sh --uninstall --force
+```
+
+**不会**改登录 Shell、历史记录或 `~/.zshrc.local`。
 
 ## 包含内容
 
@@ -65,12 +76,14 @@ bash install-fishlike-zsh.sh
 
 ## 行为
 
-- 保留现有配置，并在修改前创建备份。
+- 保留现有配置；备份统一放在 `~/.local/share/fishlike-zsh/backup/<timestamp>/`。
 - Antidote 仅在安装期用来生成插件 bundle；交互 shell 不再加载 Antidote。
 - 插件、fzf 与 `share/` 载荷固定版本并校验校验和。
 - 托管文本文件统一权限 `0600`。
+- 安装后写入状态文件 `~/.local/share/fishlike-zsh/state`。
 - 重复运行安装器可修复缺失或损坏的托管文件。
 - 验证使用登录交互 shell（`zsh -lic`）。
 - 只有安装验证成功并得到明确同意后，才会修改登录 Shell。
+- `--uninstall` 把托管目录移走，不删历史、不碰本机覆盖配置。
 
 需要 Zsh 5.4.2 或更高版本以及 Git。详情见 `bash install-fishlike-zsh.sh --help`。
