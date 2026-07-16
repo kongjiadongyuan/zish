@@ -2,88 +2,68 @@
 
 English | [简体中文](README.zh-CN.md)
 
-A repeatable installer for a fish-like Zsh setup. It keeps your existing `.zshrc`, installs pinned dependencies in isolated directories, and adds a small loader block.
+Install a fish-like Zsh setup from the network. **Always latest** — no frozen pins, no SHA release packages.
 
 ## Install
-
-With `curl`:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/kongjiadongyuan/zish/main/install-fishlike-zsh.sh | bash
 ```
 
-With `wget`:
-
-```sh
-wget -qO- https://raw.githubusercontent.com/kongjiadongyuan/zish/main/install-fishlike-zsh.sh | bash
-```
-
-From a git checkout (uses local `share/`):
+Or from a git checkout (uses local `share/` when present):
 
 ```sh
 bash install-fishlike-zsh.sh
 ```
 
-## Layout
+## What you get
 
-| Path | Role |
-|------|------|
-| `install-fishlike-zsh.sh` | Installer only: fetch, verify, land files, wire loader |
-| `share/config.zsh` | Runtime shell behavior (source of truth) |
-| `share/plugins.txt` | Pinned Antidote plugin list (source of truth) |
+- Autosuggestions, syntax highlighting, fzf-tab, history search
+- `Ctrl+R` fuzzy history, abbreviations, directory history (`prevd` / `nextd` / `cdh`)
+- Compact git-aware prompt
+- Isolated under `~/.config/fishlike-zsh` and `~/.local/share/fishlike-zsh`
+- Your existing `.zshrc` is kept; only a small loader block is added
 
-On install the script writes:
+## Behavior
 
-- `~/.config/fishlike-zsh/env.zsh` — machine paths
-- `~/.config/fishlike-zsh/config.zsh` — copy of `share/config.zsh`
-- `~/.config/fishlike-zsh/plugins.txt` — copy of `share/plugins.txt`
-- `~/.config/fishlike-zsh/plugins.zsh` — **install-time** static source list (Antidote is not used at shell startup)
-- plugin clones under `~/.cache/fishlike-zsh/plugins/`
-- a short loader in `~/.zshrc` that sources `env.zsh` then `config.zsh`
+| Topic | Policy |
+|-------|--------|
+| Versions | Latest from GitHub on each install (`main` / latest fzf release) |
+| Startup | Read-only: sources prebuilt `plugins.zsh` — no Antidote at runtime |
+| Backups | `~/.local/share/fishlike-zsh/backup/<timestamp>/` |
+| Uninstall | `bash install-fishlike-zsh.sh --uninstall` (moves managed trees; keeps history & `.zshrc.local`) |
+| System packages | Not installed unless `--install-deps` |
+| Login shell | Unchanged unless you pass `--chsh` / answer yes |
 
-Startup is read-only: re-run the installer to repair plugins. Local overrides: `${ZDOTDIR:-$HOME}/.zshrc.local`.
+Local overrides: `~/.zshrc.local`.
 
 ## Options
 
 ```text
---dry-run           Preview actions without changing anything
---install-deps      Install missing system packages (zsh/git/curl) via the package manager
---force             Replace conflicting managed paths / confirm uninstall without prompts
---uninstall         Remove the loader and managed trees (moves them into a backup folder)
---chsh / --no-chsh  Answer the login-shell question
---non-interactive   Never prompt; use defaults
+--dry-run           Preview only
+--install-deps      Install missing zsh/git/curl via package manager
+--force             Replace / uninstall without extra prompts
+--uninstall         Remove loader + managed trees
+--chsh / --no-chsh  Login-shell question
+--non-interactive   Never prompt
 ```
 
-Missing system tools are printed with install hints by default. They are only auto-installed when you pass `--install-deps`.
+## Layout after install
 
-Uninstall example:
+```text
+~/.config/fishlike-zsh/
+  env.zsh         # paths
+  config.zsh      # shell behavior
+  plugins.txt     # plugin list (floating latest)
+  plugins.zsh     # static source list written at install time
 
-```sh
-bash install-fishlike-zsh.sh --uninstall
-# or non-interactive:
-bash install-fishlike-zsh.sh --uninstall --force
+~/.local/share/fishlike-zsh/
+  antidote/       # Antidote checkout (install-time tool)
+  bin/fzf
+  backup/
+  state
+
+~/.cache/fishlike-zsh/plugins/   # plugin clones
 ```
 
-Does **not** change your login shell, history, or `~/.zshrc.local`.
-
-## Included
-
-- Autosuggestions and syntax highlighting
-- Fuzzy completion and `Ctrl+R` history search
-- Arrow-key history search and directory history
-- Abbreviations and a compact Git-aware prompt (`git`, not `vcs_info`)
-- Portable colors for macOS and Linux
-
-## Behavior
-
-- Existing configuration is preserved; backups go under `~/.local/share/fishlike-zsh/backup/<timestamp>/`.
-- Antidote is used only during install to materialize the plugin bundle; interactive shells do not load Antidote.
-- Plugins, fzf, and the `share/` payload are pinned and checksum-verified.
-- Managed text files are always mode `0600`.
-- Install writes a small state file at `~/.local/share/fishlike-zsh/state`.
-- Re-running the installer repairs missing or damaged managed files.
-- Verification uses a login interactive shell (`zsh -lic`).
-- The login shell is changed only after a successful install and explicit approval.
-- `--uninstall` moves managed trees aside; it never deletes history or local overrides.
-
-Requires Zsh 5.4.2 or newer and Git. Run `bash install-fishlike-zsh.sh --help` for details.
+Re-run the installer anytime to pull newer plugins/config from the network.

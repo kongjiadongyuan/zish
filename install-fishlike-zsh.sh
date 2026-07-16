@@ -1,61 +1,28 @@
 #!/usr/bin/env bash
-# install-fishlike-zsh.sh — safe, reproducible installer for a fish-like zsh.
+# install-fishlike-zsh.sh — network install of a fish-like zsh (latest).
 #
-# What it installs:
-#   - autosuggestions and syntax highlighting
-#   - fzf-tab completion and Ctrl+R history search
-#   - a compact path/git/status prompt
-#   - directory history (prevd, nextd, cdh)
-#   - abbreviations through zsh-abbr
-#   - portable ls colors and terminal titles
-#
-# Safety properties:
-#   - existing ~/.zshrc content is preserved; a small loader block is added
-#   - backups under ~/.local/share/fishlike-zsh/backup/ (not beside originals)
-#   - unmanaged files in the installer namespace require --force
-#   - Antidote, plugins, fzf, and share/ payload are pinned and verified
-#   - plugin bundle is built once at install time; runtime only sources it
-#   - managed text files always use mode 0600
-#   - system packages install only with --install-deps
-#   - --uninstall removes managed trees + loader; never history/local/login shell
-#   - --dry-run performs no downloads and leaves no files behind
-#   - login shell is unchanged unless --chsh is explicitly passed
+# Philosophy:
+#   - Pull current share/ + plugins + Antidote + fzf from the network
+#   - No commit pins, no SHA packaging, no frozen “release set”
+#   - Install writes files once; shell startup only sources them
+#   - Does not dirty unrelated state; uninstall moves managed trees to backup
 #
 # Usage:
-#   bash install-fishlike-zsh.sh
-#   bash install-fishlike-zsh.sh --dry-run
+#   curl -fsSL https://raw.githubusercontent.com/kongjiadongyuan/zish/main/install-fishlike-zsh.sh | bash
 #   bash install-fishlike-zsh.sh --uninstall
-#   bash install-fishlike-zsh.sh --chsh
 #
-# Machine-local overrides can be placed in:
-#   ${ZDOTDIR:-$HOME}/.zshrc.local
+# Local overrides: ${ZDOTDIR:-$HOME}/.zshrc.local
 
 set -euo pipefail
 
-INSTALLER_VERSION="2.5.0"
+INSTALLER_VERSION="3.0.0"
 MIN_ZSH_VERSION="5.4.2"
-
-# Immutable dependency pins. Update these deliberately and test as a set.
-ANTIDOTE_REPO="https://github.com/mattmc3/antidote.git"
-ANTIDOTE_REF="0fdd1804974d31556b9b52a3bffd4c48a4cc76ea"
-
-FZF_VERSION="0.60.3"
-FZF_BASE_URL="https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}"
-
-# Runtime payload in share/. Hashes pin curl|bash fetches of those files.
-ZISH_SHARE_REF="${ZISH_SHARE_REF:-main}"
-ZISH_SHARE_BASE="${ZISH_SHARE_BASE:-https://raw.githubusercontent.com/kongjiadongyuan/zish/${ZISH_SHARE_REF}/share}"
-SHARE_CONFIG_SHA256="d7810532ee1fd1cba7c18b952f9a9bfa5498488b1611c302378cf3e701022daa"
-SHARE_PLUGINS_SHA256="ce4715443f75f52630439737635735076499c43b21847d925c2ab7737f552326"
-
-# Loaded from share/plugins.txt after resolve_share_payload.
-PLUGIN_ZSH_COMPLETIONS=""
-PLUGIN_EZ_COMPINIT=""
-PLUGIN_FZF_TAB=""
-PLUGIN_AUTOSUGGESTIONS=""
-PLUGIN_HISTORY_SEARCH=""
-PLUGIN_ZSH_ABBR=""
-PLUGIN_SYNTAX_HIGHLIGHTING=""
+ZISH_REPO="${ZISH_REPO:-kongjiadongyuan/zish}"
+ZISH_REF="${ZISH_REF:-main}"
+SHARE_BASE="${ZISH_SHARE_BASE:-https://raw.githubusercontent.com/${ZISH_REPO}/${ZISH_REF}/share}"
+ANTIDOTE_REPO="${ANTIDOTE_REPO:-https://github.com/mattmc3/antidote.git}"
+ANTIDOTE_BRANCH="${ANTIDOTE_BRANCH:-main}"
+FZF_REPO_API="${FZF_REPO_API:-https://api.github.com/repos/junegunn/fzf/releases/latest}"
 
 FLAG_CHSH=0
 FLAG_NO_CHSH=0
@@ -78,13 +45,11 @@ ZSH_PLUGINS_TXT="${FISHLIKE_CONFIG_DIR}/plugins.txt"
 ZSH_PLUGINS_ZSH="${FISHLIKE_CONFIG_DIR}/plugins.zsh"
 ZSHRC="${ZDOTDIR}/.zshrc"
 LOCAL_RC="${ZDOTDIR}/.zshrc.local"
-SHARE_DIR=""
 
-# Isolated data/cache roots (never touch a foreign Antidote install).
 FISHLIKE_DATA_DIR="${FISHLIKE_DATA_DIR:-$XDG_DATA_HOME/fishlike-zsh}"
 FISHLIKE_BACKUP_DIR="${FISHLIKE_BACKUP_DIR:-$FISHLIKE_DATA_DIR/backup}"
 FISHLIKE_STATE_FILE="${FISHLIKE_STATE_FILE:-$FISHLIKE_DATA_DIR/state}"
-ANTIDOTE_DIR="${FISHLIKE_ANTIDOTE_DIR:-${ANTIDOTE_DIR:-$FISHLIKE_DATA_DIR/antidote}}"
+ANTIDOTE_DIR="${FISHLIKE_ANTIDOTE_DIR:-$FISHLIKE_DATA_DIR/antidote}"
 ANTIDOTE_CACHE_DIR="${FISHLIKE_ANTIDOTE_HOME:-$XDG_CACHE_HOME/fishlike-zsh/plugins}"
 LOCAL_BIN="${FISHLIKE_BIN_DIR:-$FISHLIKE_DATA_DIR/bin}"
 
@@ -99,13 +64,8 @@ LEGACY_END="# <<< fishlike-zsh managed (install-fishlike-zsh.sh) <<<"
 TEMP_PATHS=()
 
 if [[ -t 1 ]]; then
-  C_RESET=$'\033[0m'
-  C_BOLD=$'\033[1m'
-  C_DIM=$'\033[2m'
-  C_GREEN=$'\033[32m'
-  C_YELLOW=$'\033[33m'
-  C_RED=$'\033[31m'
-  C_CYAN=$'\033[36m'
+  C_RESET=$'\033[0m' C_BOLD=$'\033[1m' C_DIM=$'\033[2m'
+  C_GREEN=$'\033[32m' C_YELLOW=$'\033[33m' C_RED=$'\033[31m' C_CYAN=$'\033[36m'
 else
   C_RESET= C_BOLD= C_DIM= C_GREEN= C_YELLOW= C_RED= C_CYAN=
 fi
@@ -115,7 +75,6 @@ ok()   { printf '%s[ok]%s %s\n' "$C_GREEN" "$C_RESET" "$*"; }
 warn() { printf '%s[warn]%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
 err()  { printf '%s[err]%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; }
 die()  { err "$*"; exit 1; }
-
 have() { command -v "$1" >/dev/null 2>&1; }
 
 can_prompt() {
@@ -131,12 +90,10 @@ ask_yes_no() {
     no) suffix='[y/N]' ;;
     *) die "invalid prompt default: $default" ;;
   esac
-
   if ! can_prompt; then
     [[ "$default" == yes ]]
     return
   fi
-
   while true; do
     printf '%s %s ' "$question" "$suffix" >/dev/tty
     if ! IFS= read -r answer </dev/tty; then
@@ -152,78 +109,9 @@ ask_yes_no() {
   done
 }
 
-require_replacement_approval() {
-  local path="$1"
-  (( FLAG_FORCE )) && return 0
-  warn "conflicting path: $path"
-  if ask_yes_no "Back up and replace this and any other conflicting managed paths?" no; then
-    FLAG_FORCE=1
-    return 0
-  fi
-  die "replacement declined: $path"
-}
-
-get_zsh_version() {
-  have zsh || return 1
-  zsh -fc 'print -r -- "$ZSH_VERSION"' 2>/dev/null
-}
-
-zsh_meets_minimum() {
-  have zsh || return 1
-  MIN_ZSH_VERSION="$MIN_ZSH_VERSION" zsh -fc \
-    'autoload -Uz is-at-least && is-at-least "$MIN_ZSH_VERSION" "$ZSH_VERSION"' \
-    >/dev/null 2>&1
-}
-
-git_is_usable() {
-  have git && git --version >/dev/null 2>&1
-}
-
-curl_is_usable() {
-  have curl && curl --version >/dev/null 2>&1
-}
-
-wget_is_usable() {
-  have wget && wget --help >/dev/null 2>&1
-}
-
-downloader_is_available() {
-  curl_is_usable || wget_is_usable
-}
-
-pinned_fzf_present() {
-  local os arch expected actual
-  [[ -x "$LOCAL_BIN/fzf" && -f "$LOCAL_BIN/fzf" && ! -L "$LOCAL_BIN/fzf" ]] || return 1
-  read -r os arch < <(detect_fzf_asset) || return 1
-  expected="$(fzf_binary_checksum "$os" "$arch")" || return 1
-  actual="$(sha256_file "$LOCAL_BIN/fzf")" || return 1
-  [[ "$actual" == "$expected" ]]
-}
-
-print_command() {
-  local arg
-  for arg in "$@"; do
-    printf ' %q' "$arg"
-  done
-  printf '\n'
-}
-
-run() {
-  if (( FLAG_DRY_RUN )); then
-    printf '%s[dry-run]%s' "$C_DIM" "$C_RESET"
-    print_command "$@"
-    return 0
-  fi
-  "$@"
-}
-
-register_temp() {
-  TEMP_PATHS+=("$1")
-}
-
+register_temp() { TEMP_PATHS+=("$1"); }
 cleanup_temp_paths() {
   local path
-  # Bash 3.2 treats an empty array expansion as unset under `set -u`.
   set +u
   for path in "${TEMP_PATHS[@]}"; do
     [[ -n "$path" ]] && rm -rf -- "$path" 2>/dev/null || true
@@ -232,33 +120,34 @@ cleanup_temp_paths() {
 }
 trap cleanup_temp_paths EXIT
 
+run() {
+  if (( FLAG_DRY_RUN )); then
+    printf '%s[dry-run]%s' "$C_DIM" "$C_RESET"
+    printf ' %q' "$@"
+    printf '\n'
+    return 0
+  fi
+  "$@"
+}
+
 usage() {
   cat <<EOF
 Usage: bash install-fishlike-zsh.sh [options]
 
+Installs the latest fishlike-zsh bits from the network (${ZISH_REF}).
+
 Options:
-  --chsh            Answer yes to the login-shell question
-  --no-chsh         Answer no to the login-shell question
-  --force           Approve replacement / uninstall without extra prompts
-  --dry-run         Show actions without downloading or changing files
-  --install-deps    Install missing system packages via the package manager
-  --uninstall       Remove fishlike-zsh loader and managed trees
-  --non-interactive  Never ask questions; use the shown defaults
-  -h, --help        Show this help
+  --chsh / --no-chsh   Login-shell question
+  --force              Approve replacements / uninstall without prompts
+  --dry-run            Preview only
+  --install-deps       Try package manager for missing zsh/git/curl
+  --uninstall          Remove loader + managed trees (moved to backup/)
+  --non-interactive    Never prompt; use defaults
+  -h, --help           This help
 
-Dependencies:
-  zsh ${MIN_ZSH_VERSION} or newer and a working git executable
-  curl or wget, tar, and a SHA-256 tool when fzf or share payload must be fetched
-
-Environment overrides:
-  ZDOTDIR                 Directory containing .zshrc
-  FISHLIKE_CONFIG_DIR     Managed configuration directory
-  FISHLIKE_DATA_DIR       Data root (antidote, fzf bin, backups, state)
-  FISHLIKE_ANTIDOTE_DIR   Pinned Antidote checkout
-  FISHLIKE_ANTIDOTE_HOME  Isolated plugin cache
-  FISHLIKE_BIN_DIR        Isolated directory for the pinned fzf binary
-  FISHLIKE_SHARE_DIR      Local share/ directory (config.zsh + plugins.txt)
-  ZISH_SHARE_REF          Git ref for remote share/ fetch (default: main)
+Environment:
+  ZDOTDIR  FISHLIKE_CONFIG_DIR  FISHLIKE_DATA_DIR
+  FISHLIKE_SHARE_DIR  ZISH_REF  ZISH_REPO
 EOF
   exit 0
 }
@@ -278,310 +167,25 @@ parse_args() {
     esac
     shift
   done
-
   if (( FLAG_CHSH && FLAG_NO_CHSH )); then
     die "use only one of --chsh / --no-chsh"
   fi
 }
 
-validate_path() {
-  local name="$1" value="$2"
-  [[ -n "$value" ]] || die "$name must not be empty"
-  [[ "$value" == /* ]] || die "$name must be an absolute path: $value"
-  [[ "$value" != *$'\n'* ]] || die "$name must not contain a newline"
+abs_ok() {
+  [[ -n "$1" && "$1" == /* && "$1" != *$'\n'* ]]
 }
 
 validate_paths() {
-  validate_path HOME "$HOME"
-  validate_path ZDOTDIR "$ZDOTDIR"
-  validate_path FISHLIKE_CONFIG_DIR "$FISHLIKE_CONFIG_DIR"
-  validate_path FISHLIKE_DATA_DIR "$FISHLIKE_DATA_DIR"
-  validate_path FISHLIKE_ANTIDOTE_DIR "$ANTIDOTE_DIR"
-  validate_path FISHLIKE_ANTIDOTE_HOME "$ANTIDOTE_CACHE_DIR"
-  validate_path FISHLIKE_BIN_DIR "$LOCAL_BIN"
-
-  case "$FISHLIKE_CONFIG_DIR" in
-    /|"$HOME"|"$ZDOTDIR") die "unsafe FISHLIKE_CONFIG_DIR: $FISHLIKE_CONFIG_DIR" ;;
-  esac
-  case "$ANTIDOTE_DIR" in
-    /|"$HOME"|"$ZDOTDIR"|"$FISHLIKE_CONFIG_DIR")
-      die "unsafe FISHLIKE_ANTIDOTE_DIR: $ANTIDOTE_DIR"
-      ;;
-  esac
-  case "$ANTIDOTE_CACHE_DIR" in
-    /|"$HOME"|"$ZDOTDIR"|"$FISHLIKE_CONFIG_DIR"|"$ANTIDOTE_DIR")
-      die "unsafe FISHLIKE_ANTIDOTE_HOME: $ANTIDOTE_CACHE_DIR"
-      ;;
-  esac
-  case "$LOCAL_BIN" in
-    /|"$HOME"|"$ZDOTDIR"|"$FISHLIKE_CONFIG_DIR"|"$ANTIDOTE_DIR"|"$ANTIDOTE_CACHE_DIR")
-      die "unsafe FISHLIKE_BIN_DIR: $LOCAL_BIN"
-      ;;
-  esac
+  abs_ok "$HOME" || die "HOME must be absolute"
+  abs_ok "$ZDOTDIR" || die "ZDOTDIR must be absolute"
+  abs_ok "$FISHLIKE_CONFIG_DIR" || die "FISHLIKE_CONFIG_DIR must be absolute"
+  abs_ok "$FISHLIKE_DATA_DIR" || die "FISHLIKE_DATA_DIR must be absolute"
+  case "$FISHLIKE_CONFIG_DIR" in /|"$HOME"|"$ZDOTDIR") die "unsafe FISHLIKE_CONFIG_DIR" ;; esac
+  case "$FISHLIKE_DATA_DIR" in /|"$HOME"|"$ZDOTDIR"|"$FISHLIKE_CONFIG_DIR") die "unsafe FISHLIKE_DATA_DIR" ;; esac
 }
 
-can_root() {
-  [[ "$(id -u)" -eq 0 ]] && return 0
-  have sudo || return 1
-  sudo -n true >/dev/null 2>&1 && return 0
-  (( FLAG_NON_INTERACTIVE )) && return 1
-  # With `curl | bash`, stdin is the script stream while stdout/stderr still
-  # point at the terminal from which sudo can obtain a password.
-  [[ -t 0 || -t 1 || -t 2 ]] && return 0
-  return 1
-}
-
-as_root() {
-  if [[ "$(id -u)" -eq 0 ]]; then
-    run "$@"
-  elif have sudo; then
-    run sudo "$@"
-  else
-    return 1
-  fi
-}
-
-suggest_system_packages() {
-  local need_zsh="$1" need_git="$2" need_downloader="$3"
-  printf 'Missing system dependencies:\n' >&2
-  (( need_zsh )) && printf '  - zsh %s or newer\n' "$MIN_ZSH_VERSION" >&2
-  (( need_git )) && printf '  - git\n' >&2
-  (( need_downloader )) && printf '  - curl or wget\n' >&2
-  printf '\nInstall them with your package manager, then re-run. Examples:\n' >&2
-  if have brew; then
-    local brew_pkgs=()
-    (( need_zsh )) && brew_pkgs+=(zsh)
-    (( need_git )) && brew_pkgs+=(git)
-    (( need_downloader )) && brew_pkgs+=(curl)
-    printf '  brew install %s\n' "${brew_pkgs[*]}" >&2
-  elif have apt-get; then
-    local apt_pkgs=()
-    (( need_zsh )) && apt_pkgs+=(zsh)
-    (( need_git )) && apt_pkgs+=(git)
-    (( need_downloader )) && apt_pkgs+=(curl ca-certificates)
-    printf '  sudo apt-get update && sudo apt-get install -y %s\n' "${apt_pkgs[*]}" >&2
-  elif have dnf; then
-    local dnf_pkgs=()
-    (( need_zsh )) && dnf_pkgs+=(zsh)
-    (( need_git )) && dnf_pkgs+=(git)
-    (( need_downloader )) && dnf_pkgs+=(curl ca-certificates)
-    printf '  sudo dnf install -y %s\n' "${dnf_pkgs[*]}" >&2
-  elif have pacman; then
-    local pacman_pkgs=()
-    (( need_zsh )) && pacman_pkgs+=(zsh)
-    (( need_git )) && pacman_pkgs+=(git)
-    (( need_downloader )) && pacman_pkgs+=(curl ca-certificates)
-    printf '  sudo pacman -S --needed %s\n' "${pacman_pkgs[*]}" >&2
-  else
-    printf '  (install zsh, git, and curl/wget with your OS package manager)\n' >&2
-  fi
-  printf '\nOr re-run with --install-deps to let the installer invoke the package manager.\n' >&2
-}
-
-install_system_packages() {
-  local need_zsh=0 need_git=0 need_downloader=0
-  zsh_meets_minimum || need_zsh=1
-  git_is_usable || need_git=1
-  if ! pinned_fzf_present && ! downloader_is_available; then
-    need_downloader=1
-  fi
-
-  if (( need_zsh == 0 && need_git == 0 && need_downloader == 0 )); then
-    ok "system dependencies already present"
-    return 0
-  fi
-
-  if (( ! FLAG_INSTALL_DEPS )); then
-    suggest_system_packages "$need_zsh" "$need_git" "$need_downloader"
-    return 0
-  fi
-
-  log "installing required system packages (--install-deps)"
-
-  if have brew; then
-    local brew_pkgs=()
-    (( need_zsh )) && brew_pkgs+=(zsh)
-    (( need_git )) && brew_pkgs+=(git)
-    (( need_downloader )) && brew_pkgs+=(wget)
-    ((${#brew_pkgs[@]})) && run brew install "${brew_pkgs[@]}"
-    return 0
-  fi
-
-  if ! can_root; then
-    warn "no root access; system package installation was skipped"
-    return 0
-  fi
-
-  # Automated matrix kept small: apt, dnf, pacman. Others print hints.
-  if have apt-get; then
-    local apt_pkgs=()
-    (( need_zsh )) && apt_pkgs+=(zsh)
-    (( need_git )) && apt_pkgs+=(git)
-    (( need_downloader )) && apt_pkgs+=(curl ca-certificates)
-    if ((${#apt_pkgs[@]})); then
-      as_root env DEBIAN_FRONTEND=noninteractive apt-get update -qq
-      as_root env DEBIAN_FRONTEND=noninteractive apt-get install -y "${apt_pkgs[@]}"
-    fi
-  elif have dnf; then
-    local dnf_pkgs=()
-    (( need_zsh )) && dnf_pkgs+=(zsh)
-    (( need_git )) && dnf_pkgs+=(git)
-    (( need_downloader )) && dnf_pkgs+=(curl ca-certificates)
-    ((${#dnf_pkgs[@]})) && as_root dnf install -y "${dnf_pkgs[@]}"
-  elif have pacman; then
-    local pacman_pkgs=()
-    (( need_zsh )) && pacman_pkgs+=(zsh)
-    (( need_git )) && pacman_pkgs+=(git)
-    (( need_downloader )) && pacman_pkgs+=(curl ca-certificates)
-    ((${#pacman_pkgs[@]})) && as_root pacman -S --needed --noconfirm "${pacman_pkgs[@]}"
-  else
-    warn "no automated package manager support here; install zsh/git/curl manually"
-    suggest_system_packages "$need_zsh" "$need_git" "$need_downloader"
-  fi
-}
-
-require_runtime_dependencies() {
-  (( FLAG_DRY_RUN )) && return 0
-
-  hash -r 2>/dev/null || true
-
-  local zsh_version
-  have zsh || die "zsh is required but is not installed"
-  zsh_version="$(get_zsh_version)" || die "zsh was found but could not be started"
-  [[ -n "$zsh_version" ]] || die "zsh did not report a version"
-  zsh_meets_minimum || \
-    die "zsh ${zsh_version} is too old; zsh ${MIN_ZSH_VERSION} or newer is required"
-
-  have git || die "git is required but is not installed"
-  git_is_usable || die "git was found but could not be started"
-
-  if ! pinned_fzf_present && ! downloader_is_available; then
-    die "curl or wget is required to install the pinned fzf binary"
-  fi
-}
-
-download() {
-  local url="$1" dest="$2"
-  if curl_is_usable; then
-    curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 \
-      --retry 3 --retry-delay 1 "$url" -o "$dest"
-  elif wget_is_usable; then
-    wget -q -O "$dest" "$url"
-  else
-    die "curl or wget is required to download $url"
-  fi
-}
-
-detect_fzf_asset() {
-  local os arch
-  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
-  arch="$(uname -m)"
-  case "$arch" in
-    x86_64|amd64) arch="amd64" ;;
-    aarch64|arm64) arch="arm64" ;;
-    armv7l) arch="armv7" ;;
-    *) die "unsupported architecture for the pinned fzf binary: $arch" ;;
-  esac
-  case "$os" in
-    linux|darwin) ;;
-    *) die "unsupported OS for the pinned fzf binary: $os" ;;
-  esac
-  printf '%s %s\n' "$os" "$arch"
-}
-
-fzf_checksum() {
-  case "$1/$2" in
-    darwin/amd64) printf '%s\n' '4a6e023c1622b6cb157384ca712a5742fd362e104ed765cbb944089ea1ba37d8' ;;
-    darwin/arm64) printf '%s\n' '8564663db38194addcd86f4868494bd2a6c375374718c6044443a108b636b6e7' ;;
-    linux/amd64) printf '%s\n' '2937a4f10b0f80e0c974d9459df3bc049b068a97212b0d253c36c9da5920b521' ;;
-    linux/arm64) printf '%s\n' '13df4d556992938a4beb340ac3b17c51c77e46db978d3071429eb77a94c581c1' ;;
-    linux/armv7) printf '%s\n' '91c417f7625370ffdf9e2b198fb395dc84da7978cc1d9c6f6dad91197a54b60d' ;;
-    *) return 1 ;;
-  esac
-}
-
-fzf_binary_checksum() {
-  case "$1/$2" in
-    darwin/amd64) printf '%s\n' '6c27e229c91e97dc24b587cae478e623f85ee0ae0d038f5f4b05459e336a30cb' ;;
-    darwin/arm64) printf '%s\n' '248d17375ffec01f8e75fbd4f438294d67b2456eb9b929cc5d5b504fa8bcfe36' ;;
-    linux/amd64) printf '%s\n' '98e569b439cdff5ddb431a9f3629a25ce5c93a6d2024be9d76df5294b16f892f' ;;
-    linux/arm64) printf '%s\n' '1c704b9479c286b7899db60a783833e98727de1ecc1e79c533244b231f06ccfa' ;;
-    linux/armv7) printf '%s\n' '09956806b213c0aafc9347014db54a506875da189f00f1273850e5e115fb9368' ;;
-    *) return 1 ;;
-  esac
-}
-
-sha256_file() {
-  local file="$1"
-  if have sha256sum; then
-    sha256sum "$file" | awk '{print $1}'
-  elif have shasum; then
-    shasum -a 256 "$file" | awk '{print $1}'
-  elif have openssl; then
-    openssl dgst -sha256 "$file" | awk '{print $NF}'
-  else
-    return 1
-  fi
-}
-
-install_fzf_userland() {
-  if [[ -e "$LOCAL_BIN/fzf" || -L "$LOCAL_BIN/fzf" ]]; then
-    if pinned_fzf_present; then
-      export PATH="$LOCAL_BIN:$PATH"
-      ok "pinned fzf already present: $LOCAL_BIN/fzf $FZF_VERSION"
-      return 0
-    fi
-    require_replacement_approval "$LOCAL_BIN/fzf"
-    move_to_backup "$LOCAL_BIN/fzf"
-  fi
-
-  local os arch asset expected url
-  read -r os arch < <(detect_fzf_asset)
-  asset="fzf-${FZF_VERSION}-${os}_${arch}.tar.gz"
-  expected="$(fzf_checksum "$os" "$arch")" || die "no checksum for fzf asset $os/$arch"
-  url="${FZF_BASE_URL}/${asset}"
-
-  log "installing pinned fzf ${FZF_VERSION} to $LOCAL_BIN"
-  if (( FLAG_DRY_RUN )); then
-    printf '  url=%s\n  sha256=%s\n' "$url" "$expected"
-    run mkdir -p "$LOCAL_BIN"
-    run download "$url"
-    run verify-sha256 "$expected" "$asset"
-    run install "$asset" "$LOCAL_BIN/fzf"
-    return 0
-  fi
-
-  have tar || die "tar is required to unpack fzf"
-  if ! have sha256sum && ! have shasum && ! have openssl; then
-    die "sha256sum, shasum, or openssl is required to verify fzf"
-  fi
-
-  mkdir -p "$LOCAL_BIN"
-  local tmp tarball actual binary_expected binary_actual
-  tmp="$(mktemp -d "$LOCAL_BIN/.fishlike-fzf.XXXXXX")"
-  register_temp "$tmp"
-  tarball="$tmp/$asset"
-
-  download "$url" "$tarball"
-  actual="$(sha256_file "$tarball")" || die "could not calculate SHA-256 for $tarball"
-  [[ "$actual" == "$expected" ]] || die "fzf checksum mismatch: expected $expected, got $actual"
-
-  tar -xzf "$tarball" -C "$tmp" fzf
-  [[ -f "$tmp/fzf" ]] || die "fzf archive did not contain the expected binary"
-  binary_expected="$(fzf_binary_checksum "$os" "$arch")" || die "missing fzf binary checksum"
-  binary_actual="$(sha256_file "$tmp/fzf")" || die "could not hash the extracted fzf binary"
-  [[ "$binary_actual" == "$binary_expected" ]] \
-    || die "extracted fzf binary checksum mismatch"
-  chmod 0755 "$tmp/fzf"
-  mv -f "$tmp/fzf" "$LOCAL_BIN/fzf"
-  rm -rf -- "$tmp"
-
-  export PATH="$LOCAL_BIN:$PATH"
-  have fzf || die "fzf installation failed"
-  ok "fzf installed and verified: $LOCAL_BIN/fzf"
-}
-
-# Backups live under FISHLIKE_BACKUP_DIR/<timestamp>/, never next to the original.
+# ---- backups ----------------------------------------------------------------
 next_backup_path() {
   local source="$1" safe candidate suffix=0
   safe="$(printf '%s' "${source#/}" | tr '/' '_')"
@@ -591,8 +195,7 @@ next_backup_path() {
     suffix=$((suffix + 1))
     candidate="$FISHLIKE_BACKUP_DIR/$TIMESTAMP/${safe}.${suffix}"
   done
-  printf '%s
-' "$candidate"
+  printf '%s\n' "$candidate"
 }
 
 backup_file() {
@@ -600,9 +203,7 @@ backup_file() {
   [[ -e "$source" || -L "$source" ]] || return 0
   backup="$(next_backup_path "$source")"
   log "backup $source -> $backup"
-  if (( FLAG_DRY_RUN )); then
-    return 0
-  fi
+  (( FLAG_DRY_RUN )) && return 0
   mkdir -p "$(dirname "$backup")"
   cp -a "$source" "$backup"
 }
@@ -612,9 +213,7 @@ move_to_backup() {
   [[ -e "$source" || -L "$source" ]] || return 0
   backup="$(next_backup_path "$source")"
   log "move $source -> $backup"
-  if (( FLAG_DRY_RUN )); then
-    return 0
-  fi
+  (( FLAG_DRY_RUN )) && return 0
   mkdir -p "$(dirname "$backup")"
   mv "$source" "$backup"
 }
@@ -626,336 +225,256 @@ is_fishlike_owned_path() {
   esac
 }
 
-antidote_remote_is_expected() {
-  local remote="$1"
-  case "$remote" in
-    https://github.com/mattmc3/antidote|https://github.com/mattmc3/antidote.git|\
-    git@github.com:mattmc3/antidote.git|ssh://git@github.com/mattmc3/antidote.git)
-      return 0
-      ;;
-    *) return 1 ;;
-  esac
-}
-
-install_antidote_fresh() {
-  log "installing pinned Antidote at $ANTIDOTE_DIR"
-  if (( FLAG_DRY_RUN )); then
-    run mkdir -p "$(dirname "$ANTIDOTE_DIR")"
-    run git init "$ANTIDOTE_DIR"
-    run git -C "$ANTIDOTE_DIR" fetch --depth=1 "$ANTIDOTE_REPO" "$ANTIDOTE_REF"
-    run git -C "$ANTIDOTE_DIR" checkout --detach "$ANTIDOTE_REF"
+require_replace() {
+  local path="$1"
+  (( FLAG_FORCE )) && return 0
+  warn "conflicting path: $path"
+  if ask_yes_no "Back up and replace conflicting managed paths?" no; then
+    FLAG_FORCE=1
     return 0
   fi
-
-  local parent tmp fetched
-  parent="$(dirname "$ANTIDOTE_DIR")"
-  mkdir -p "$parent"
-  tmp="$(mktemp -d "$parent/.fishlike-antidote.XXXXXX")"
-  register_temp "$tmp"
-
-  git -C "$tmp" init -q
-  git -C "$tmp" remote add origin "$ANTIDOTE_REPO"
-  git -C "$tmp" fetch -q --depth=1 origin "$ANTIDOTE_REF"
-  fetched="$(git -C "$tmp" rev-parse FETCH_HEAD)"
-  [[ "$fetched" == "$ANTIDOTE_REF" ]] || die "Antidote ref resolved unexpectedly: $fetched"
-  git -C "$tmp" checkout -q --detach FETCH_HEAD
-  [[ -r "$tmp/antidote.zsh" ]] || die "pinned Antidote checkout is incomplete"
-  mv "$tmp" "$ANTIDOTE_DIR"
-  ok "Antidote installed at pinned commit ${ANTIDOTE_REF:0:12}"
+  die "replacement declined: $path"
 }
 
-replace_antidote_install() {
-  require_replacement_approval "$ANTIDOTE_DIR"
-  move_to_backup "$ANTIDOTE_DIR"
-  if (( FLAG_DRY_RUN )); then
-    install_antidote_fresh
-    return 0
-  fi
-  install_antidote_fresh
-}
-
-install_antidote() {
-  if [[ ! -e "$ANTIDOTE_DIR" && ! -L "$ANTIDOTE_DIR" ]]; then
-    install_antidote_fresh
-    return 0
-  fi
-
-  if [[ -L "$ANTIDOTE_DIR" || ! -d "$ANTIDOTE_DIR/.git" || ! -r "$ANTIDOTE_DIR/antidote.zsh" ]]; then
-    replace_antidote_install
-    return 0
-  fi
-
-  local remote dirty head
-  remote="$(git -C "$ANTIDOTE_DIR" remote get-url origin 2>/dev/null || true)"
-  if ! antidote_remote_is_expected "$remote"; then
-    replace_antidote_install
-    return 0
-  fi
-
-  dirty="$(GIT_OPTIONAL_LOCKS=0 git -C "$ANTIDOTE_DIR" status --porcelain --untracked-files=normal 2>/dev/null || true)"
-  if [[ -n "$dirty" ]]; then
-    warn "existing Antidote checkout has local changes"
-    replace_antidote_install
-    return 0
-  fi
-
-  head="$(git -C "$ANTIDOTE_DIR" rev-parse HEAD 2>/dev/null || true)"
-  if [[ "$head" == "$ANTIDOTE_REF" ]]; then
-    ok "Antidote already pinned at ${ANTIDOTE_REF:0:12}"
-    return 0
-  fi
-
-  log "moving Antidote to pinned commit ${ANTIDOTE_REF:0:12}"
-  if (( FLAG_DRY_RUN )); then
-    run git -C "$ANTIDOTE_DIR" fetch --depth=1 "$ANTIDOTE_REPO" "$ANTIDOTE_REF"
-    run git -C "$ANTIDOTE_DIR" checkout --detach "$ANTIDOTE_REF"
-    return 0
-  fi
-
-  git -C "$ANTIDOTE_DIR" fetch -q --depth=1 "$ANTIDOTE_REPO" "$ANTIDOTE_REF"
-  [[ "$(git -C "$ANTIDOTE_DIR" rev-parse FETCH_HEAD)" == "$ANTIDOTE_REF" ]] \
-    || die "fetched Antidote commit did not match the pin"
-  git -C "$ANTIDOTE_DIR" checkout -q --detach FETCH_HEAD
-  [[ "$(git -C "$ANTIDOTE_DIR" rev-parse HEAD)" == "$ANTIDOTE_REF" ]] \
-    || die "failed to pin Antidote"
-  ok "Antidote pinned at ${ANTIDOTE_REF:0:12}"
-}
-
-is_managed_artifact() {
-  [[ -f "$1" ]] && grep -Fqx "$MANAGED_MARKER" "$1" 2>/dev/null
-}
-
-is_managed_bundle() {
-  [[ -f "$1" ]] && {
-    local first=''
-    IFS= read -r first <"$1" || true
-    [[ "$first" == "$BUNDLE_MARKER" ]]
-  }
-}
-
-plugin_entry_present() {
-  local repo="$1" path="$ANTIDOTE_CACHE_DIR/github.com/$1"
-  case "$repo" in
-    zsh-users/zsh-completions) [[ -d "$path/src" ]] ;;
-    mattmc3/ez-compinit) [[ -r "$path/ez-compinit.plugin.zsh" ]] ;;
-    Aloxaf/fzf-tab) [[ -r "$path/fzf-tab.plugin.zsh" ]] ;;
-    zsh-users/zsh-autosuggestions) [[ -r "$path/zsh-autosuggestions.plugin.zsh" ]] ;;
-    zsh-users/zsh-history-substring-search) [[ -r "$path/zsh-history-substring-search.plugin.zsh" ]] ;;
-    olets/zsh-abbr) [[ -r "$path/zsh-abbr.plugin.zsh" ]] ;;
-    zsh-users/zsh-syntax-highlighting) [[ -r "$path/zsh-syntax-highlighting.plugin.zsh" ]] ;;
-    *) return 1 ;;
-  esac
-}
-
-plugin_remote_is_expected() {
-  local repo="$1" remote="$2"
-  case "$remote" in
-    "https://github.com/$repo"|"https://github.com/$repo.git") return 0 ;;
-    *) return 1 ;;
-  esac
-}
-
-plugin_repo_matches() {
-  local repo="$1" pin="$2" path head dirty remote
-  path="$ANTIDOTE_CACHE_DIR/github.com/$repo"
-  [[ ! -L "$path" && -d "$path/.git" ]] || return 1
-  plugin_entry_present "$repo" || return 1
-  head="$(git -C "$path" rev-parse HEAD 2>/dev/null || true)"
-  [[ "$head" == "$pin" ]] || return 1
-  dirty="$(GIT_OPTIONAL_LOCKS=0 git -C "$path" status --porcelain --untracked-files=normal 2>/dev/null || true)"
-  [[ -z "$dirty" ]] || return 1
-  remote="$(git -C "$path" remote get-url origin 2>/dev/null || true)"
-  plugin_remote_is_expected "$repo" "$remote"
-}
-
-plugin_cache_matches_pins() {
-  plugin_repo_matches zsh-users/zsh-completions "$PLUGIN_ZSH_COMPLETIONS" || return 1
-  plugin_repo_matches mattmc3/ez-compinit "$PLUGIN_EZ_COMPINIT" || return 1
-  plugin_repo_matches Aloxaf/fzf-tab "$PLUGIN_FZF_TAB" || return 1
-  plugin_repo_matches zsh-users/zsh-autosuggestions "$PLUGIN_AUTOSUGGESTIONS" || return 1
-  plugin_repo_matches zsh-users/zsh-history-substring-search "$PLUGIN_HISTORY_SEARCH" || return 1
-  plugin_repo_matches olets/zsh-abbr "$PLUGIN_ZSH_ABBR" || return 1
-  plugin_repo_matches zsh-users/zsh-syntax-highlighting "$PLUGIN_SYNTAX_HIGHLIGHTING" || return 1
-  return 0
-}
-
-prepare_plugin_repo() {
-  local repo="$1" pin="$2" path remote=''
-  path="$ANTIDOTE_CACHE_DIR/github.com/$repo"
-  [[ -e "$path" || -L "$path" ]] || return 0
-  plugin_repo_matches "$repo" "$pin" && return 0
-
-  if [[ ! -L "$path" && -d "$path/.git" ]]; then
-    remote="$(git -C "$path" remote get-url origin 2>/dev/null || true)"
-  fi
-  if plugin_remote_is_expected "$repo" "$remote"; then
-    warn "preserving stale or incomplete plugin checkout: $path"
-    move_to_backup "$path"
-    return 0
-  fi
-
-  require_replacement_approval "$path"
-  move_to_backup "$path"
-}
-
-prepare_plugin_cache() {
-  if (( FLAG_DRY_RUN )) && ! git_is_usable; then
-    warn "plugin cache inspection deferred until git is installed"
-    return 0
-  fi
-  if [[ -z "$PLUGIN_ZSH_COMPLETIONS" ]]; then
-    if (( FLAG_DRY_RUN )); then
-      warn "plugin cache inspection deferred until share payload is available"
-      return 0
-    fi
-    die "plugin pins were not loaded from share/plugins.txt"
-  fi
-  prepare_plugin_repo zsh-users/zsh-completions "$PLUGIN_ZSH_COMPLETIONS"
-  prepare_plugin_repo mattmc3/ez-compinit "$PLUGIN_EZ_COMPINIT"
-  prepare_plugin_repo Aloxaf/fzf-tab "$PLUGIN_FZF_TAB"
-  prepare_plugin_repo zsh-users/zsh-autosuggestions "$PLUGIN_AUTOSUGGESTIONS"
-  prepare_plugin_repo zsh-users/zsh-history-substring-search "$PLUGIN_HISTORY_SEARCH"
-  prepare_plugin_repo olets/zsh-abbr "$PLUGIN_ZSH_ABBR"
-  prepare_plugin_repo zsh-users/zsh-syntax-highlighting "$PLUGIN_SYNTAX_HIGHLIGHTING"
-}
-
-# Managed text files always use 0600. No platform-specific stat(1) dialects.
-atomic_write_content() {
+atomic_write() {
   local dest="$1" content="$2" parent tmp
   parent="$(dirname "$dest")"
   mkdir -p "$parent"
   tmp="$(mktemp "$parent/.fishlike-write.XXXXXX")"
   register_temp "$tmp"
-
-  if ! printf '%s' "$content" >"$tmp"; then
-    rm -f -- "$tmp"
-    die "failed to write temporary file for $dest"
-  fi
+  printf '%s' "$content" >"$tmp" || die "write failed: $dest"
   chmod 0600 "$tmp"
-
-  if ! mv -f "$tmp" "$dest"; then
-    rm -f -- "$tmp"
-    die "failed to replace $dest"
-  fi
+  mv -f "$tmp" "$dest" || die "replace failed: $dest"
 }
 
-content_equals_file() {
+write_if_changed() {
   local dest="$1" content="$2"
-  [[ -f "$dest" ]] && cmp -s "$dest" <(printf '%s' "$content")
-}
-
-
-count_loader_starts() {
-  local file="$1" a b
-  a="$(grep -Fxc "$LOADER_START" "$file" 2>/dev/null || true)"
-  b="$(grep -Fxc "$LEGACY_START" "$file" 2>/dev/null || true)"
-  printf '%s\n' "$((a + b))"
-}
-
-count_loader_ends() {
-  local file="$1" a b
-  a="$(grep -Fxc "$LOADER_END" "$file" 2>/dev/null || true)"
-  b="$(grep -Fxc "$LEGACY_END" "$file" 2>/dev/null || true)"
-  printf '%s\n' "$((a + b))"
-}
-
-is_loader_start_line() {
-  [[ "$1" == "$LOADER_START" || "$1" == "$LEGACY_START" ]]
-}
-
-is_loader_end_line() {
-  [[ "$1" == "$LOADER_END" || "$1" == "$LEGACY_END" ]]
-}
-
-preflight_zshrc() {
-  [[ -L "$ZSHRC" ]] && die "refusing to edit symlinked .zshrc: $ZSHRC"
-  [[ -e "$ZSHRC" && ! -f "$ZSHRC" ]] && die ".zshrc is not a regular file: $ZSHRC"
-  [[ -f "$ZSHRC" ]] || return 0
-
-  local starts ends
-  starts="$(count_loader_starts "$ZSHRC")"
-  ends="$(count_loader_ends "$ZSHRC")"
-  if (( starts != ends || starts > 1 )); then
-    die "malformed or duplicate fishlike-zsh block in $ZSHRC; fix it manually before installing"
-  fi
-}
-
-preflight_managed_artifact() {
-  local dest="$1"
-  [[ -L "$dest" ]] && die "refusing to replace symlink: $dest"
-  [[ -e "$dest" && ! -f "$dest" ]] && die "managed target is not a regular file: $dest"
-  if [[ -f "$dest" ]] && ! is_managed_artifact "$dest"; then
-    require_replacement_approval "$dest"
-  fi
-}
-
-preflight_fzf() {
-  [[ -e "$LOCAL_BIN/fzf" || -L "$LOCAL_BIN/fzf" ]] || return 0
-  pinned_fzf_present && return 0
-  require_replacement_approval "$LOCAL_BIN/fzf"
-}
-
-preflight_antidote() {
-  [[ -e "$ANTIDOTE_DIR" || -L "$ANTIDOTE_DIR" ]] || return 0
-  if [[ -L "$ANTIDOTE_DIR" || ! -d "$ANTIDOTE_DIR/.git" || ! -r "$ANTIDOTE_DIR/antidote.zsh" ]]; then
-    require_replacement_approval "$ANTIDOTE_DIR"
+  if [[ -f "$dest" ]] && cmp -s "$dest" <(printf '%s' "$content"); then
+    ok "unchanged $dest"
     return 0
   fi
-  have git || return 0
-
-  local remote dirty
-  remote="$(git -C "$ANTIDOTE_DIR" remote get-url origin 2>/dev/null || true)"
-  if ! antidote_remote_is_expected "$remote"; then
-    require_replacement_approval "$ANTIDOTE_DIR"
+  if [[ -L "$dest" ]]; then die "refusing symlink: $dest"; fi
+  if [[ -e "$dest" && ! -f "$dest" ]]; then die "refusing non-file: $dest"; fi
+  if [[ -f "$dest" ]]; then
+    if ! grep -Fqx "$MANAGED_MARKER" "$dest" 2>/dev/null && \
+       ! { IFS= read -r _first <"$dest" && [[ "$_first" == "$BUNDLE_MARKER" ]]; }; then
+      require_replace "$dest"
+    fi
+    backup_file "$dest"
   fi
-  dirty="$(GIT_OPTIONAL_LOCKS=0 git -C "$ANTIDOTE_DIR" status --porcelain --untracked-files=normal 2>/dev/null || true)"
-  if [[ -n "$dirty" ]]; then
-    require_replacement_approval "$ANTIDOTE_DIR"
-  fi
-}
-
-preflight() {
-  preflight_zshrc
-  preflight_managed_artifact "$FISHLIKE_ENV"
-  preflight_managed_artifact "$FISHLIKE_CONFIG"
-  preflight_managed_artifact "$ZSH_PLUGINS_TXT"
-  preflight_fzf
-  preflight_antidote
-
-  if [[ -L "$ZSH_PLUGINS_ZSH" ]]; then
-    die "refusing to replace symlinked plugin bundle: $ZSH_PLUGINS_ZSH"
-  fi
-  if [[ -e "$ZSH_PLUGINS_ZSH" && ! -f "$ZSH_PLUGINS_ZSH" ]]; then
-    die "plugin bundle target is not a regular file: $ZSH_PLUGINS_ZSH"
-  fi
-  if [[ -f "$ZSH_PLUGINS_ZSH" ]] && ! is_managed_bundle "$ZSH_PLUGINS_ZSH"; then
-    require_replacement_approval "$ZSH_PLUGINS_ZSH"
-  fi
-}
-
-# Build plugins.zsh once at install time. Runtime config only sources it.
-build_plugin_bundle() {
-  log "building pinned plugin bundle (install-time only)"
-
   if (( FLAG_DRY_RUN )); then
-    log "would run antidote bundle -> $ZSH_PLUGINS_ZSH"
+    log "would write $dest"
+    return 0
+  fi
+  atomic_write "$dest" "$content"
+  ok "wrote $dest"
+}
+
+# ---- deps -------------------------------------------------------------------
+zsh_ok() {
+  have zsh || return 1
+  MIN_ZSH_VERSION="$MIN_ZSH_VERSION" zsh -fc \
+    'autoload -Uz is-at-least && is-at-least "$MIN_ZSH_VERSION" "$ZSH_VERSION"' \
+    >/dev/null 2>&1
+}
+
+ensure_deps() {
+  local need_zsh=0 need_git=0 need_dl=0
+  zsh_ok || need_zsh=1
+  have git || need_git=1
+  have curl || have wget || need_dl=1
+
+  if (( need_zsh == 0 && need_git == 0 && need_dl == 0 )); then
+    ok "system dependencies present"
     return 0
   fi
 
-  [[ -r "$ANTIDOTE_DIR/antidote.zsh" ]] || die "Antidote is missing: $ANTIDOTE_DIR"
-  [[ -r "$ZSH_PLUGINS_TXT" ]] || die "plugin manifest missing: $ZSH_PLUGINS_TXT"
+  if (( ! FLAG_INSTALL_DEPS )); then
+    warn "missing: $(
+      (( need_zsh )) && printf 'zsh '
+      (( need_git )) && printf 'git '
+      (( need_dl )) && printf 'curl/wget '
+    )"
+    warn "install them, or re-run with --install-deps"
+    (( FLAG_DRY_RUN )) && return 0
+  fi
 
-  if [[ -f "$ZSH_PLUGINS_ZSH" ]] && ! is_managed_bundle "$ZSH_PLUGINS_ZSH"; then
-    require_replacement_approval "$ZSH_PLUGINS_ZSH"
-    backup_file "$ZSH_PLUGINS_ZSH"
-  elif [[ -f "$ZSH_PLUGINS_ZSH" ]] && is_managed_bundle "$ZSH_PLUGINS_ZSH" \
-      && plugin_cache_matches_pins \
-      && [[ "$ZSH_PLUGINS_ZSH" -nt "$ZSH_PLUGINS_TXT" ]]; then
-    ok "plugin bundle already current"
+  if (( FLAG_INSTALL_DEPS )) && ! (( FLAG_DRY_RUN )); then
+    if have brew; then
+      local b=()
+      (( need_zsh )) && b+=(zsh)
+      (( need_git )) && b+=(git)
+      (( need_dl )) && b+=(curl)
+      ((${#b[@]})) && brew install "${b[@]}"
+    elif have apt-get && { [[ "$(id -u)" -eq 0 ]] || have sudo; }; then
+      local a=() s=()
+      (( need_zsh )) && a+=(zsh)
+      (( need_git )) && a+=(git)
+      (( need_dl )) && a+=(curl ca-certificates)
+      if [[ "$(id -u)" -eq 0 ]]; then s=(); else s=(sudo); fi
+      if ((${#a[@]})); then
+        "${s[@]}" env DEBIAN_FRONTEND=noninteractive apt-get update -qq
+        "${s[@]}" env DEBIAN_FRONTEND=noninteractive apt-get install -y "${a[@]}"
+      fi
+    else
+      die "cannot auto-install deps on this system"
+    fi
+  fi
+
+  (( FLAG_DRY_RUN )) && return 0
+  hash -r 2>/dev/null || true
+  zsh_ok || die "zsh ${MIN_ZSH_VERSION}+ required"
+  have git || die "git required"
+  have curl || have wget || die "curl or wget required"
+}
+
+download() {
+  local url="$1" dest="$2"
+  if have curl; then
+    curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --retry 3 -o "$dest" "$url"
+  else
+    wget -q -O "$dest" "$url"
+  fi
+}
+
+# ---- share payload (latest from network, or local checkout) -----------------
+resolve_share() {
+  local dir src
+  if [[ -n "${FISHLIKE_SHARE_DIR:-}" && -f "$FISHLIKE_SHARE_DIR/config.zsh" && -f "$FISHLIKE_SHARE_DIR/plugins.txt" ]]; then
+    SHARE_CONFIG_SRC="$FISHLIKE_SHARE_DIR/config.zsh"
+    SHARE_PLUGINS_SRC="$FISHLIKE_SHARE_DIR/plugins.txt"
+    ok "using FISHLIKE_SHARE_DIR"
+    return 0
+  fi
+  src="${BASH_SOURCE[0]:-}"
+  if [[ -n "$src" && -f "$src" ]]; then
+    dir="$(cd "$(dirname "$src")" && pwd)/share"
+    if [[ -f "$dir/config.zsh" && -f "$dir/plugins.txt" ]]; then
+      SHARE_CONFIG_SRC="$dir/config.zsh"
+      SHARE_PLUGINS_SRC="$dir/plugins.txt"
+      ok "using local share/: $dir"
+      return 0
+    fi
+  fi
+
+  log "fetching latest share/ from $SHARE_BASE"
+  if (( FLAG_DRY_RUN )); then
+    SHARE_CONFIG_SRC=""
+    SHARE_PLUGINS_SRC=""
+    return 0
+  fi
+  local tmp
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/fishlike-share.XXXXXX")"
+  register_temp "$tmp"
+  download "$SHARE_BASE/config.zsh" "$tmp/config.zsh"
+  download "$SHARE_BASE/plugins.txt" "$tmp/plugins.txt"
+  SHARE_CONFIG_SRC="$tmp/config.zsh"
+  SHARE_PLUGINS_SRC="$tmp/plugins.txt"
+  ok "share payload downloaded"
+}
+
+install_share_files() {
+  log "installing configuration"
+  if (( FLAG_DRY_RUN )) && [[ -z "${SHARE_CONFIG_SRC:-}" ]]; then
+    log "would write config + plugins.txt from network"
+    return 0
+  fi
+  local cfg plugs
+  cfg="$(cat "$SHARE_CONFIG_SRC"; printf '\034')"; cfg="${cfg%$'\034'}"
+  plugs="$(cat "$SHARE_PLUGINS_SRC"; printf '\034')"; plugs="${plugs%$'\034'}"
+  [[ "$cfg" == "$MANAGED_MARKER"* ]] || cfg="$MANAGED_MARKER"$'\n'"$cfg"
+  [[ "$plugs" == "$MANAGED_MARKER"* ]] || plugs="$MANAGED_MARKER"$'\n'"$plugs"
+  write_if_changed "$FISHLIKE_CONFIG" "$cfg"
+  write_if_changed "$ZSH_PLUGINS_TXT" "$plugs"
+
+  local env
+  env="$(
+    printf '%s\n' "$MANAGED_MARKER"
+    printf '# fishlike-zsh env v%s\n' "$INSTALLER_VERSION"
+    printf 'typeset -g FISHLIKE_ANTIDOTE_DIR=%q\n' "$ANTIDOTE_DIR"
+    printf 'typeset -g FISHLIKE_ANTIDOTE_HOME=%q\n' "$ANTIDOTE_CACHE_DIR"
+    printf 'typeset -g FISHLIKE_PLUGIN_FILE=%q\n' "$ZSH_PLUGINS_TXT"
+    printf 'typeset -g FISHLIKE_PLUGIN_BUNDLE=%q\n' "$ZSH_PLUGINS_ZSH"
+    printf 'typeset -g FISHLIKE_LOCAL_BIN=%q\n' "$LOCAL_BIN"
+    printf 'typeset -g FISHLIKE_LOCAL_RC=%q\n' "$LOCAL_RC"
+  )"
+  write_if_changed "$FISHLIKE_ENV" "$env"
+}
+
+# ---- fzf latest -------------------------------------------------------------
+install_fzf() {
+  if [[ -x "$LOCAL_BIN/fzf" ]]; then
+    ok "fzf present: $LOCAL_BIN/fzf ($("$LOCAL_BIN/fzf" --version 2>/dev/null | head -1))"
+    export PATH="$LOCAL_BIN:$PATH"
     return 0
   fi
 
-  mkdir -p "$(dirname "$ZSH_PLUGINS_ZSH")" "$ANTIDOTE_CACHE_DIR"
+  log "installing latest fzf to $LOCAL_BIN"
+  if (( FLAG_DRY_RUN )); then
+    log "would download latest fzf release"
+    return 0
+  fi
+
+  local os arch tag asset url tmp json
+  os="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  arch="$(uname -m)"
+  case "$arch" in
+    x86_64|amd64) arch=amd64 ;;
+    aarch64|arm64) arch=arm64 ;;
+    armv7l) arch=armv7 ;;
+    *) die "unsupported arch: $arch" ;;
+  esac
+  case "$os" in linux|darwin) ;; *) die "unsupported OS: $os" ;; esac
+
+  json="$(mktemp "${TMPDIR:-/tmp}/fzf-rel.XXXXXX")"
+  register_temp "$json"
+  download "$FZF_REPO_API" "$json"
+  tag="$(sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$json" | head -1)"
+  [[ -n "$tag" ]] || die "could not parse fzf latest tag"
+  asset="fzf-${tag#v}-${os}_${arch}.tar.gz"
+  url="https://github.com/junegunn/fzf/releases/download/${tag}/${asset}"
+
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/fzf.XXXXXX")"
+  register_temp "$tmp"
+  download "$url" "$tmp/$asset"
+  have tar || die "tar required"
+  tar -xzf "$tmp/$asset" -C "$tmp" fzf
+  mkdir -p "$LOCAL_BIN"
+  chmod 0755 "$tmp/fzf"
+  mv -f "$tmp/fzf" "$LOCAL_BIN/fzf"
+  export PATH="$LOCAL_BIN:$PATH"
+  ok "fzf ${tag} -> $LOCAL_BIN/fzf"
+}
+
+# ---- antidote latest + plugin bundle ----------------------------------------
+install_antidote() {
+  log "installing Antidote (${ANTIDOTE_BRANCH})"
+  if (( FLAG_DRY_RUN )); then
+    log "would clone/update $ANTIDOTE_REPO"
+    return 0
+  fi
+  mkdir -p "$(dirname "$ANTIDOTE_DIR")"
+  if [[ -d "$ANTIDOTE_DIR/.git" ]]; then
+    git -C "$ANTIDOTE_DIR" fetch -q origin "$ANTIDOTE_BRANCH"
+    git -C "$ANTIDOTE_DIR" checkout -q "$ANTIDOTE_BRANCH"
+    git -C "$ANTIDOTE_DIR" pull -q --ff-only origin "$ANTIDOTE_BRANCH" || \
+      git -C "$ANTIDOTE_DIR" reset -q --hard "origin/$ANTIDOTE_BRANCH"
+  else
+    [[ -e "$ANTIDOTE_DIR" ]] && require_replace "$ANTIDOTE_DIR" && move_to_backup "$ANTIDOTE_DIR"
+    git clone -q --depth 1 --branch "$ANTIDOTE_BRANCH" "$ANTIDOTE_REPO" "$ANTIDOTE_DIR"
+  fi
+  [[ -r "$ANTIDOTE_DIR/antidote.zsh" ]] || die "antidote.zsh missing"
+  ok "Antidote at $(git -C "$ANTIDOTE_DIR" rev-parse --short HEAD)"
+}
+
+build_plugins() {
+  log "building plugin bundle (latest from network)"
+  if (( FLAG_DRY_RUN )); then
+    log "would antidote bundle -> $ZSH_PLUGINS_ZSH"
+    return 0
+  fi
+  [[ -r "$ZSH_PLUGINS_TXT" ]] || die "missing $ZSH_PLUGINS_TXT"
+  mkdir -p "$ANTIDOTE_CACHE_DIR" "$(dirname "$ZSH_PLUGINS_ZSH")"
 
   local tmp err
   tmp="$(mktemp "$ZSH_PLUGINS_ZSH.tmp.XXXXXX")"
@@ -963,9 +482,15 @@ build_plugin_bundle() {
   register_temp "$tmp"
   register_temp "$err"
 
-  # Clone pins + emit a static source list. No user zshrc involved.
-  if ! env \
-      ANTIDOTE_HOME="$ANTIDOTE_CACHE_DIR" \
+  # Refresh clones to latest each install.
+  if [[ -d "$ANTIDOTE_CACHE_DIR/github.com" ]]; then
+    find "$ANTIDOTE_CACHE_DIR/github.com" -mindepth 2 -maxdepth 2 -type d -name .git -print0 2>/dev/null \
+      | while IFS= read -r -d '' g; do
+          git -C "$(dirname "$g")" pull -q --ff-only 2>/dev/null || true
+        done
+  fi
+
+  if ! env ANTIDOTE_HOME="$ANTIDOTE_CACHE_DIR" \
       FISHLIKE_ANTIDOTE_DIR="$ANTIDOTE_DIR" \
       FISHLIKE_PLUGIN_FILE="$ZSH_PLUGINS_TXT" \
       FISHLIKE_BUNDLE_MARKER="$BUNDLE_MARKER" \
@@ -981,241 +506,26 @@ build_plugin_bundle() {
       ' >"$tmp" 2>"$err"; then
     warn "antidote bundle failed:"
     tail -n 40 "$err" >&2 || true
-    rm -f -- "$tmp"
     die "could not build plugin bundle"
   fi
-
-  if ! grep -qE '^source ' "$tmp"; then
-    tail -n 40 "$err" >&2 || true
-    rm -f -- "$tmp"
-    die "plugin bundle has no source lines"
-  fi
-
+  grep -qE '^source ' "$tmp" || die "bundle has no source lines"
   chmod 0600 "$tmp"
-  if ! mv -f "$tmp" "$ZSH_PLUGINS_ZSH"; then
-    rm -f -- "$tmp"
-    die "failed to write $ZSH_PLUGINS_ZSH"
-  fi
-
-  plugin_cache_matches_pins || die "plugin cache does not match pins after bundling"
-  is_managed_bundle "$ZSH_PLUGINS_ZSH" || die "plugin bundle missing managed marker"
-  ok "plugin bundle ready: $ZSH_PLUGINS_ZSH"
+  mv -f "$tmp" "$ZSH_PLUGINS_ZSH"
+  ok "plugin bundle ready"
 }
 
-write_managed_file_from_path() {
-  local dest="$1" srcfile="$2" content
-  [[ -r "$srcfile" ]] || die "missing share payload file: $srcfile"
-  content="$(cat "$srcfile"; printf '\034')"
-  content="${content%$'\034'}"
-  if [[ "$content" != "$MANAGED_MARKER"$'\n'* && "$content" != "$MANAGED_MARKER" ]]; then
-    content="$MANAGED_MARKER"$'\n'"$content"
-  fi
-
-  if content_equals_file "$dest" "$content"; then
-    ok "unchanged $dest"
-    return 0
-  fi
-
-  if [[ -L "$dest" ]]; then
-    die "refusing to replace symlink: $dest"
-  fi
-  if [[ -e "$dest" && ! -f "$dest" ]]; then
-    die "refusing to replace non-file path: $dest"
-  fi
-  if [[ -f "$dest" ]]; then
-    if ! is_managed_artifact "$dest"; then
-      require_replacement_approval "$dest"
-    fi
-    backup_file "$dest"
-  fi
-
-  if (( FLAG_DRY_RUN )); then
-    log "would write managed file $dest"
-    return 0
-  fi
-
-  atomic_write_content "$dest" "$content"
-  ok "wrote $dest"
+# ---- zshrc loader -----------------------------------------------------------
+loader_count() {
+  local f="$1" a b
+  a="$(grep -Fxc "$LOADER_START" "$f" 2>/dev/null || true)"
+  b="$(grep -Fxc "$LEGACY_START" "$f" 2>/dev/null || true)"
+  printf '%s\n' "$((a + b))"
 }
 
-pin_for_repo() {
-  local repo="$1" file="$2" line pin
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    case "$line" in
-      '#'*|'') continue ;;
-      "$repo "*)
-        pin="${line##*pin:}"
-        pin="${pin%%[[:space:]]*}"
-        if [[ "$pin" =~ ^[0-9a-f]{40}$ ]]; then
-          printf '%s\n' "$pin"
-          return 0
-        fi
-        ;;
-    esac
-  done <"$file"
-  return 1
-}
+is_start() { [[ "$1" == "$LOADER_START" || "$1" == "$LEGACY_START" ]]; }
+is_end()   { [[ "$1" == "$LOADER_END" || "$1" == "$LEGACY_END" ]]; }
 
-load_plugin_pins_from() {
-  local file="$1"
-  PLUGIN_ZSH_COMPLETIONS="$(pin_for_repo zsh-users/zsh-completions "$file")" \
-    || die "pin missing in $file: zsh-users/zsh-completions"
-  PLUGIN_EZ_COMPINIT="$(pin_for_repo mattmc3/ez-compinit "$file")" \
-    || die "pin missing in $file: mattmc3/ez-compinit"
-  PLUGIN_FZF_TAB="$(pin_for_repo Aloxaf/fzf-tab "$file")" \
-    || die "pin missing in $file: Aloxaf/fzf-tab"
-  PLUGIN_AUTOSUGGESTIONS="$(pin_for_repo zsh-users/zsh-autosuggestions "$file")" \
-    || die "pin missing in $file: zsh-users/zsh-autosuggestions"
-  PLUGIN_HISTORY_SEARCH="$(pin_for_repo zsh-users/zsh-history-substring-search "$file")" \
-    || die "pin missing in $file: zsh-users/zsh-history-substring-search"
-  PLUGIN_ZSH_ABBR="$(pin_for_repo olets/zsh-abbr "$file")" \
-    || die "pin missing in $file: olets/zsh-abbr"
-  PLUGIN_SYNTAX_HIGHLIGHTING="$(pin_for_repo zsh-users/zsh-syntax-highlighting "$file")" \
-    || die "pin missing in $file: zsh-users/zsh-syntax-highlighting"
-}
-
-resolve_share_dir_local() {
-  local src dir
-  if [[ -n "${FISHLIKE_SHARE_DIR:-}" ]]; then
-    [[ -f "$FISHLIKE_SHARE_DIR/config.zsh" && -f "$FISHLIKE_SHARE_DIR/plugins.txt" ]] \
-      || die "FISHLIKE_SHARE_DIR incomplete: $FISHLIKE_SHARE_DIR"
-    printf '%s\n' "$FISHLIKE_SHARE_DIR"
-    return 0
-  fi
-
-  src="${BASH_SOURCE[0]:-}"
-  if [[ -n "$src" && -f "$src" ]]; then
-    dir="$(cd "$(dirname "$src")" && pwd)/share"
-    if [[ -f "$dir/config.zsh" && -f "$dir/plugins.txt" ]]; then
-      printf '%s\n' "$dir"
-      return 0
-    fi
-  fi
-  return 1
-}
-
-verify_share_file() {
-  local file="$1" expected="$2" actual
-  actual="$(sha256_file "$file")" || die "could not hash $file"
-  [[ "$actual" == "$expected" ]] || die "share payload checksum mismatch for $(basename "$file")"
-}
-
-download_share_payload() {
-  local tmp config_url plugins_url
-  if ! have sha256sum && ! have shasum && ! have openssl; then
-    die "sha256sum, shasum, or openssl is required to verify share payload"
-  fi
-  downloader_is_available || die "curl or wget is required to fetch share payload"
-
-  tmp="$(mktemp -d "${TMPDIR:-/tmp}/fishlike-share.XXXXXX")"
-  register_temp "$tmp"
-  config_url="${ZISH_SHARE_BASE}/config.zsh"
-  plugins_url="${ZISH_SHARE_BASE}/plugins.txt"
-
-  log "fetching share payload from $ZISH_SHARE_BASE"
-  if (( FLAG_DRY_RUN )); then
-    printf '  config=%s\n  plugins=%s\n' "$config_url" "$plugins_url"
-    printf '  config_sha256=%s\n  plugins_sha256=%s\n' \
-      "$SHARE_CONFIG_SHA256" "$SHARE_PLUGINS_SHA256"
-    SHARE_DIR="$tmp"
-    : >"$tmp/config.zsh"
-    : >"$tmp/plugins.txt"
-    return 0
-  fi
-
-  download "$config_url" "$tmp/config.zsh"
-  download "$plugins_url" "$tmp/plugins.txt"
-  verify_share_file "$tmp/config.zsh" "$SHARE_CONFIG_SHA256"
-  verify_share_file "$tmp/plugins.txt" "$SHARE_PLUGINS_SHA256"
-  SHARE_DIR="$tmp"
-  ok "share payload verified"
-}
-
-resolve_share_payload() {
-  local local_dir
-  if local_dir="$(resolve_share_dir_local)"; then
-    SHARE_DIR="$local_dir"
-    if ! (( FLAG_DRY_RUN )) && { have sha256sum || have shasum || have openssl; }; then
-      verify_share_file "$SHARE_DIR/config.zsh" "$SHARE_CONFIG_SHA256"
-      verify_share_file "$SHARE_DIR/plugins.txt" "$SHARE_PLUGINS_SHA256"
-    fi
-    ok "using local share payload: $SHARE_DIR"
-  else
-    download_share_payload
-  fi
-
-  if (( FLAG_DRY_RUN )) && [[ ! -s "${SHARE_DIR:-}/plugins.txt" ]]; then
-    return 0
-  fi
-  load_plugin_pins_from "$SHARE_DIR/plugins.txt"
-}
-
-render_env_zsh() {
-  local antidote_q cache_q plugins_txt_q plugins_zsh_q local_bin_q local_rc_q
-  printf -v antidote_q '%q' "$ANTIDOTE_DIR"
-  printf -v cache_q '%q' "$ANTIDOTE_CACHE_DIR"
-  printf -v plugins_txt_q '%q' "$ZSH_PLUGINS_TXT"
-  printf -v plugins_zsh_q '%q' "$ZSH_PLUGINS_ZSH"
-  printf -v local_bin_q '%q' "$LOCAL_BIN"
-  printf -v local_rc_q '%q' "$LOCAL_RC"
-
-  printf '%s\n' "$MANAGED_MARKER"
-  printf '# fishlike-zsh env v%s — machine paths only.\n' "$INSTALLER_VERSION"
-  printf 'typeset -g FISHLIKE_ANTIDOTE_DIR=%s\n' "$antidote_q"
-  printf 'typeset -g FISHLIKE_ANTIDOTE_HOME=%s\n' "$cache_q"
-  printf 'typeset -g FISHLIKE_PLUGIN_FILE=%s\n' "$plugins_txt_q"
-  printf 'typeset -g FISHLIKE_PLUGIN_BUNDLE=%s\n' "$plugins_zsh_q"
-  printf 'typeset -g FISHLIKE_LOCAL_BIN=%s\n' "$local_bin_q"
-  printf 'typeset -g FISHLIKE_LOCAL_RC=%s\n' "$local_rc_q"
-}
-
-write_env_zsh() {
-  local content
-  content="$(render_env_zsh; printf '\034')"
-  content="${content%$'\034'}"
-
-  if content_equals_file "$FISHLIKE_ENV" "$content"; then
-    ok "unchanged $FISHLIKE_ENV"
-    return 0
-  fi
-
-  if [[ -L "$FISHLIKE_ENV" ]]; then
-    die "refusing to replace symlink: $FISHLIKE_ENV"
-  fi
-  if [[ -e "$FISHLIKE_ENV" && ! -f "$FISHLIKE_ENV" ]]; then
-    die "refusing to replace non-file path: $FISHLIKE_ENV"
-  fi
-  if [[ -f "$FISHLIKE_ENV" ]]; then
-    if ! is_managed_artifact "$FISHLIKE_ENV"; then
-      require_replacement_approval "$FISHLIKE_ENV"
-    fi
-    backup_file "$FISHLIKE_ENV"
-  fi
-
-  if (( FLAG_DRY_RUN )); then
-    log "would write managed file $FISHLIKE_ENV"
-    return 0
-  fi
-
-  atomic_write_content "$FISHLIKE_ENV" "$content"
-  ok "wrote $FISHLIKE_ENV"
-}
-
-install_managed_share() {
-  log "installing managed configuration from share payload"
-  [[ -n "$SHARE_DIR" ]] || die "share payload was not resolved"
-  if (( FLAG_DRY_RUN )) && [[ ! -s "$SHARE_DIR/plugins.txt" ]]; then
-    log "would write managed file $ZSH_PLUGINS_TXT"
-    log "would write managed file $FISHLIKE_CONFIG"
-    write_env_zsh
-    return 0
-  fi
-  write_managed_file_from_path "$ZSH_PLUGINS_TXT" "$SHARE_DIR/plugins.txt"
-  write_managed_file_from_path "$FISHLIKE_CONFIG" "$SHARE_DIR/config.zsh"
-  write_env_zsh
-}
-
-render_zshrc_loader() {
+render_loader() {
   local env_q config_q
   printf -v env_q '%q' "$FISHLIKE_ENV"
   printf -v config_q '%q' "$FISHLIKE_CONFIG"
@@ -1227,351 +537,152 @@ render_zshrc_loader() {
   printf '%s\n' "$LOADER_END"
 }
 
-update_zshrc_loader() {
-  local loader starts=0 ends=0 output='' line in_block=0 found=0 existing
-  loader="$(render_zshrc_loader; printf '\034')"
-  loader="${loader%$'\034'}"
+update_zshrc() {
+  local loader output='' line in_block=0 found=0 starts existing
+  loader="$(render_loader; printf '\034')"; loader="${loader%$'\034'}"
+
+  if [[ -L "$ZSHRC" ]]; then die "refusing symlinked .zshrc: $ZSHRC"; fi
+  if [[ -e "$ZSHRC" && ! -f "$ZSHRC" ]]; then die ".zshrc not a file: $ZSHRC"; fi
 
   if [[ ! -f "$ZSHRC" ]]; then
-    if (( FLAG_DRY_RUN )); then
-      log "would create $ZSHRC with a fishlike-zsh loader"
-      return 0
-    fi
-    atomic_write_content "$ZSHRC" "$loader"
-    ok "created loader in $ZSHRC"
+    (( FLAG_DRY_RUN )) && { log "would create $ZSHRC"; return 0; }
+    atomic_write "$ZSHRC" "$loader"
+    ok "created $ZSHRC"
     return 0
   fi
 
-  starts="$(count_loader_starts "$ZSHRC")"
-  ends="$(count_loader_ends "$ZSHRC")"
-  (( starts == ends && starts <= 1 )) || die "malformed fishlike-zsh block in $ZSHRC"
+  starts="$(loader_count "$ZSHRC")"
+  (( starts <= 1 )) || die "duplicate fishlike blocks in $ZSHRC"
 
   if (( starts == 0 )); then
-    existing="$(cat "$ZSHRC"; printf '\034')"
-    existing="${existing%$'\034'}"
+    existing="$(cat "$ZSHRC"; printf '\034')"; existing="${existing%$'\034'}"
     output="$existing"
-    if [[ -n "$output" ]]; then
-      [[ "$output" == *$'\n' ]] || output+=$'\n'
-      output+=$'\n'
-    fi
+    [[ -n "$output" && "$output" != *$'\n' ]] && output+=$'\n'
+    [[ -n "$output" ]] && output+=$'\n'
     output+="$loader"
   else
     while IFS= read -r line || [[ -n "$line" ]]; do
-      if is_loader_start_line "$line"; then
-        (( in_block == 0 && found == 0 )) || die "duplicate fishlike-zsh block in $ZSHRC"
-        in_block=1
-        found=1
-        output+="$loader"
-      elif is_loader_end_line "$line"; then
-        (( in_block == 1 )) || die "unmatched fishlike-zsh end marker in $ZSHRC"
+      if is_start "$line"; then
+        in_block=1; found=1; output+="$loader"
+      elif is_end "$line"; then
         in_block=0
       elif (( ! in_block )); then
         output+="$line"$'\n'
       fi
     done <"$ZSHRC"
-    (( in_block == 0 && found == 1 )) || die "incomplete fishlike-zsh block in $ZSHRC"
+    (( found )) || die "incomplete fishlike block in $ZSHRC"
   fi
 
-  if content_equals_file "$ZSHRC" "$output"; then
+  if cmp -s "$ZSHRC" <(printf '%s' "$output"); then
     ok "unchanged loader in $ZSHRC"
     return 0
   fi
-
   backup_file "$ZSHRC"
-  if (( FLAG_DRY_RUN )); then
-    if (( starts == 0 )); then
-      log "would append loader to $ZSHRC"
-    else
-      log "would replace existing fishlike-zsh block in $ZSHRC"
-    fi
-    return 0
-  fi
-
-  atomic_write_content "$ZSHRC" "$output"
+  if (( FLAG_DRY_RUN )); then log "would update loader in $ZSHRC"; return 0; fi
+  atomic_write "$ZSHRC" "$output"
   ok "updated loader in $ZSHRC"
 }
 
-write_state_file() {
-  if (( FLAG_DRY_RUN )); then
-    log "would write state $FISHLIKE_STATE_FILE"
-    return 0
-  fi
+remove_zshrc_loader() {
+  [[ -f "$ZSHRC" ]] || return 0
+  local starts output='' line in_block=0 found=0
+  starts="$(loader_count "$ZSHRC")"
+  (( starts == 0 )) && { ok "no loader in $ZSHRC"; return 0; }
+  (( starts == 1 )) || die "malformed loader in $ZSHRC"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    if is_start "$line"; then in_block=1; found=1
+    elif is_end "$line"; then in_block=0
+    elif (( ! in_block )); then output+="$line"$'\n'
+    fi
+  done <"$ZSHRC"
+  backup_file "$ZSHRC"
+  if (( FLAG_DRY_RUN )); then log "would remove loader"; return 0; fi
+  atomic_write "$ZSHRC" "$output"
+  ok "removed loader from $ZSHRC"
+}
+
+# ---- state / uninstall ------------------------------------------------------
+write_state() {
+  (( FLAG_DRY_RUN )) && { log "would write state"; return 0; }
   mkdir -p "$(dirname "$FISHLIKE_STATE_FILE")"
   cat >"$FISHLIKE_STATE_FILE" <<EOF
-# fishlike-zsh install state v${INSTALLER_VERSION}
+# fishlike-zsh state v${INSTALLER_VERSION}
 version=${INSTALLER_VERSION}
 installed_at=${TIMESTAMP}
+ref=${ZISH_REF}
 config_dir=${FISHLIKE_CONFIG_DIR}
 data_dir=${FISHLIKE_DATA_DIR}
 backup_dir=${FISHLIKE_BACKUP_DIR}
 plugin_cache=${ANTIDOTE_CACHE_DIR}
-antidote_dir=${ANTIDOTE_DIR}
-bin_dir=${LOCAL_BIN}
 zshrc=${ZSHRC}
-local_rc=${LOCAL_RC}
-env=${FISHLIKE_ENV}
-config=${FISHLIKE_CONFIG}
-plugins_txt=${ZSH_PLUGINS_TXT}
-plugins_zsh=${ZSH_PLUGINS_ZSH}
 EOF
   chmod 0600 "$FISHLIKE_STATE_FILE"
   ok "wrote state $FISHLIKE_STATE_FILE"
 }
 
-remove_zshrc_loader() {
-  [[ -f "$ZSHRC" ]] || return 0
-  local starts ends output='' line in_block=0 found=0
-  starts="$(count_loader_starts "$ZSHRC")"
-  ends="$(count_loader_ends "$ZSHRC")"
-  if (( starts == 0 )); then
-    ok "no fishlike-zsh loader in $ZSHRC"
-    return 0
-  fi
-  (( starts == ends && starts <= 1 )) || die "malformed fishlike-zsh block in $ZSHRC; fix manually"
-
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    if is_loader_start_line "$line"; then
-      (( in_block == 0 && found == 0 )) || die "duplicate fishlike-zsh block in $ZSHRC"
-      in_block=1
-      found=1
-    elif is_loader_end_line "$line"; then
-      (( in_block == 1 )) || die "unmatched fishlike-zsh end marker in $ZSHRC"
-      in_block=0
-    elif (( ! in_block )); then
-      output+="$line"$'\n'
-    fi
-  done <"$ZSHRC"
-  (( in_block == 0 && found == 1 )) || die "incomplete fishlike-zsh block in $ZSHRC"
-
-  while [[ "$output" == *$'\n\n\n'* ]]; do
-    output="${output//$'\n\n\n'/$'\n\n'}"
-  done
-
-  backup_file "$ZSHRC"
-  if (( FLAG_DRY_RUN )); then
-    log "would remove fishlike-zsh loader from $ZSHRC"
-    return 0
-  fi
-  atomic_write_content "$ZSHRC" "$output"
-  ok "removed loader from $ZSHRC"
-}
-
 uninstall_fishlike() {
   printf '%s\n' "${C_BOLD}fishlike-zsh uninstall v${INSTALLER_VERSION}${C_RESET}"
   printf '  target: %s\n\n' "$HOME"
-
-  local -a victims=()
-  local p
-  for p in \
-      "$FISHLIKE_CONFIG_DIR" \
-      "$ANTIDOTE_CACHE_DIR" \
-      "$ANTIDOTE_DIR" \
-      "$LOCAL_BIN" \
-      "$FISHLIKE_STATE_FILE"; do
-    if [[ -e "$p" || -L "$p" ]]; then
-      if is_fishlike_owned_path "$p" || [[ "$p" == "$FISHLIKE_STATE_FILE" ]]; then
-        victims+=("$p")
-      else
-        warn "skipping path outside fishlike-zsh namespace: $p"
-      fi
+  local -a victims=() p
+  for p in "$FISHLIKE_CONFIG_DIR" "$ANTIDOTE_CACHE_DIR" "$ANTIDOTE_DIR" "$LOCAL_BIN" "$FISHLIKE_STATE_FILE"; do
+    if [[ -e "$p" || -L "$p" ]] && is_fishlike_owned_path "$p"; then
+      victims+=("$p")
+    elif [[ "$p" == "$FISHLIKE_STATE_FILE" && -e "$p" ]]; then
+      victims+=("$p")
     fi
   done
-
-  printf 'Will remove the fishlike-zsh loader from:\n  %s\n' "$ZSHRC"
-  printf 'Will move managed paths into %s/%s/:\n' "$FISHLIKE_BACKUP_DIR" "$TIMESTAMP"
-  if ((${#victims[@]})); then
-    for p in "${victims[@]}"; do
-      printf '  %s\n' "$p"
-    done
-  else
-    printf '  (no managed trees found)\n'
+  printf 'Will strip loader from %s\n' "$ZSHRC"
+  printf 'Will move into %s/%s/:\n' "$FISHLIKE_BACKUP_DIR" "$TIMESTAMP"
+  ((${#victims[@]})) && printf '  %s\n' "${victims[@]}" || printf '  (nothing)\n'
+  printf '\nWill NOT touch: %s, history, login shell, system packages\n\n' "$LOCAL_RC"
+  if (( ! FLAG_FORCE )) && ! ask_yes_no "Proceed with uninstall?" no; then
+    die "uninstall declined"
   fi
-  printf '\nWill NOT touch:\n'
-  printf '  %s\n' "$LOCAL_RC" "${HISTFILE:-$HOME/.zsh_history}" "login shell" "system packages"
-  printf '  prior backups under %s\n\n' "$FISHLIKE_BACKUP_DIR"
-
-  if (( ! FLAG_FORCE )); then
-    if ! ask_yes_no "Proceed with uninstall?" no; then
-      die "uninstall declined"
-    fi
-  fi
-
   remove_zshrc_loader
-
-  for p in "${victims[@]}"; do
-    move_to_backup "$p"
-  done
-
-  for p in \
-      "$(dirname "$LOCAL_BIN")" \
-      "$(dirname "$ANTIDOTE_DIR")" \
-      "$(dirname "$ANTIDOTE_CACHE_DIR")"; do
-    if [[ -d "$p" ]] && is_fishlike_owned_path "$p" && [[ "$p" != "$FISHLIKE_BACKUP_DIR" ]]; then
-      if (( ! FLAG_DRY_RUN )); then
-        rmdir "$p" 2>/dev/null || true
-      fi
-    fi
-  done
-
-  ok "uninstall complete"
-  printf '  backups: %s/%s\n' "$FISHLIKE_BACKUP_DIR" "$TIMESTAMP"
-  printf '  open a new terminal or: exec zsh -l\n'
+  for p in "${victims[@]}"; do move_to_backup "$p"; done
+  ok "uninstall complete (backups: $FISHLIKE_BACKUP_DIR/$TIMESTAMP)"
 }
 
-append_shell_to_etc_shells() {
-  local shell_path="$1"
-  if (( FLAG_DRY_RUN )); then
-    log "would append $shell_path to /etc/shells"
-    return 0
-  fi
-  if [[ "$(id -u)" -eq 0 ]]; then
-    printf '%s\n' "$shell_path" >>/etc/shells
-  else
-    printf '%s\n' "$shell_path" | sudo tee -a /etc/shells >/dev/null
-  fi
-}
-
-lookup_login_shell() {
-  local user="$1" current=''
-  if have getent; then
-    current="$(getent passwd "$user" 2>/dev/null | awk -F: '{print $7}')"
-  elif have dscl; then
-    current="$(dscl . -read "/Users/$user" UserShell 2>/dev/null | awk '{print $2}')"
-  elif [[ "$user" == "$(id -un)" ]]; then
-    current="${SHELL:-}"
-  fi
-  printf '%s\n' "$current"
+# ---- verify -----------------------------------------------------------------
+verify() {
+  log "verifying"
+  if (( FLAG_DRY_RUN )); then ok "skip verify (dry-run)"; return 0; fi
+  [[ -r "$FISHLIKE_ENV" && -r "$FISHLIKE_CONFIG" && -r "$ZSH_PLUGINS_ZSH" ]] \
+    || die "managed files missing"
+  local report
+  report="$(
+    env ZDOTDIR="$ZDOTDIR" zsh -lic '
+      typeset -i fail=0
+      p() { print "$1=ok" }
+      f() { print "$1=FAILED"; fail=1 }
+      [[ "$(emulate)" == zsh ]] && p emulate || f emulate
+      [[ -r $FISHLIKE_PLUGIN_BUNDLE ]] && p bundle || f bundle
+      (( ! $+functions[antidote] )) && p no_antidote || f no_antidote
+      [[ "$(bindkey "^I")" == *fzf-tab* ]] && p fzf_tab || f fzf_tab
+      [[ "$(bindkey "^R")" == *_fishlike_history* ]] && p ctrl_r || f ctrl_r
+      (( $+functions[prevd] )) && p dirhist || f dirhist
+      (( $+ZSH_AUTOSUGGEST_STRATEGY )) && p autosuggest || f autosuggest
+      print "VERIFY=$fail"
+      exit $fail
+    ' 2>/dev/null
+  )" || true
+  printf '%s\n' "$report" | sed 's/^/    /'
+  printf '%s\n' "$report" | grep -q '^VERIFY=0$' || die "verification failed"
+  ok "verification passed"
 }
 
 maybe_chsh() {
   (( FLAG_NO_CHSH )) && { ok "login shell unchanged"; return 0; }
-
-  local zsh_path target_user current
+  local zsh_path current
   zsh_path="$(command -v zsh)"
-  [[ -n "$zsh_path" && "$zsh_path" != *$'\n'* ]] || die "invalid zsh path"
-
-  target_user="$(id -un)"
-  if [[ "$(id -u)" -eq 0 && -n "${SUDO_USER:-}" && "${SUDO_USER}" != root ]]; then
-    target_user="$SUDO_USER"
-  fi
-
-  current="$(lookup_login_shell "$target_user")"
-  if [[ "$current" == "$zsh_path" ]]; then
-    ok "login shell already set to $zsh_path"
-    return 0
-  fi
-
+  current="${SHELL:-}"
+  [[ "$current" == "$zsh_path" ]] && { ok "login shell already zsh"; return 0; }
   if (( ! FLAG_CHSH )); then
-    if ask_yes_no "Set Zsh as your login shell?" no; then
-      FLAG_CHSH=1
-    else
-      ok "login shell unchanged"
-      return 0
-    fi
+    ask_yes_no "Set Zsh as your login shell?" no || { ok "login shell unchanged"; return 0; }
   fi
-
-  have chsh || { warn "chsh is unavailable; login shell was not changed"; return 0; }
-
-  if [[ -r /etc/shells ]] && ! grep -qxF "$zsh_path" /etc/shells 2>/dev/null; then
-    if can_root; then
-      append_shell_to_etc_shells "$zsh_path"
-    else
-      warn "$zsh_path is not in /etc/shells; chsh may reject it"
-    fi
-  fi
-
-  log "changing login shell for $target_user: ${current:-unknown} -> $zsh_path"
-  if (( FLAG_DRY_RUN )); then
-    if [[ "$(id -u)" -eq 0 && "$target_user" != root ]]; then
-      run chsh -s "$zsh_path" "$target_user"
-    else
-      run chsh -s "$zsh_path"
-    fi
-    return 0
-  fi
-
-  if [[ "$(id -u)" -eq 0 && "$target_user" != root ]]; then
-    chsh -s "$zsh_path" "$target_user" || warn "chsh failed; set it manually"
-  else
-    chsh -s "$zsh_path" || warn "chsh failed; set it manually"
-  fi
-}
-
-verify() {
-  log "verifying installation"
-  if (( FLAG_DRY_RUN )); then
-    ok "verification skipped in dry-run"
-    return 0
-  fi
-
-  zsh_meets_minimum || die "zsh ${MIN_ZSH_VERSION} or newer is required"
-  pinned_fzf_present || die "the managed fzf binary is missing or failed checksum verification"
-  [[ -r "$FISHLIKE_ENV" ]] || die "missing managed env: $FISHLIKE_ENV"
-  [[ -r "$FISHLIKE_CONFIG" ]] || die "missing managed config: $FISHLIKE_CONFIG"
-  [[ -r "$ZSH_PLUGINS_TXT" ]] || die "missing plugin manifest: $ZSH_PLUGINS_TXT"
-  is_managed_bundle "$ZSH_PLUGINS_ZSH" || die "missing managed plugin bundle"
-  [[ "$(git -C "$ANTIDOTE_DIR" rev-parse HEAD 2>/dev/null)" == "$ANTIDOTE_REF" ]] \
-    || die "Antidote is not at the pinned commit"
-  plugin_cache_matches_pins || die "one or more plugins are not clean pinned checkouts"
-
-  local pin_count
-  pin_count="$(grep -Ec ' pin:[0-9a-f]{40}$' "$ZSH_PLUGINS_TXT" || true)"
-  [[ "$pin_count" -eq 7 ]] || die "plugin manifest does not contain seven immutable pins"
-
-  local stderr_file report verify_status=0
-  stderr_file="$(mktemp "${TMPDIR:-/tmp}/fishlike-zsh-verify.XXXXXX")"
-  register_temp "$stderr_file"
-
-  # Login interactive shell: exercises ~/.zprofile (sticky emulate sh, etc.).
-  if report="$(
-    env ZDOTDIR="$ZDOTDIR" zsh -lic '
-      typeset -i fail=0
-      pass_check() { print "$1=ok" }
-      fail_check() { print "$1=FAILED"; fail=1 }
-
-      print "zsh=$(zsh --version 2>/dev/null | head -1)"
-      print "fzf=$(command -v fzf) $(fzf --version 2>/dev/null | head -1)"
-      print "emulate=$(emulate 2>/dev/null)"
-      [[ "$(emulate 2>/dev/null)" == zsh ]] && pass_check emulate_zsh || fail_check emulate_zsh
-      [[ -r "$FISHLIKE_PLUGIN_FILE" ]] && pass_check plugin_manifest || fail_check plugin_manifest
-      [[ -r "$FISHLIKE_PLUGIN_BUNDLE" ]] && pass_check plugin_bundle || fail_check plugin_bundle
-      # Bundle must only reference the fishlike-zsh plugin cache (not ~/.cache/antidote).
-      if [[ -r "$FISHLIKE_PLUGIN_BUNDLE" ]] \
-          && ! grep -E "^source " "$FISHLIKE_PLUGIN_BUNDLE" | grep -qv "fishlike-zsh/plugins"; then
-        pass_check isolated_cache
-      else
-        fail_check isolated_cache
-      fi
-      # Antidote is install-time only; interactive config must not define it.
-      (( ! $+functions[antidote] )) && pass_check no_runtime_antidote || fail_check no_runtime_antidote
-      [[ "$(bindkey "^I" 2>/dev/null)" == *fzf-tab* ]] && pass_check fzf_tab || fail_check fzf_tab
-      [[ "$(bindkey "^[[A" 2>/dev/null)" == *history-substring-search-up* ]] && pass_check history_up || fail_check history_up
-      [[ "$(bindkey "^R" 2>/dev/null)" == *_fishlike_history* ]] && pass_check ctrl_r || fail_check ctrl_r
-      [[ "$(bindkey "^[[1;3C" 2>/dev/null)" == *_fishlike_alt_right* ]] && pass_check alt_right || fail_check alt_right
-      (( $+ZSH_AUTOSUGGEST_STRATEGY )) && pass_check autosuggest || fail_check autosuggest
-      (( $+functions[_zsh_highlight] || $+ZSH_HIGHLIGHT_VERSION )) && pass_check highlight || fail_check highlight
-      (( $+functions[abbr] || $+commands[abbr] )) && pass_check abbr || fail_check abbr
-      (( $+functions[prevd] && $+functions[nextd] && $+functions[cdh] )) && pass_check dirhist || fail_check dirhist
-      (( ${precmd_functions[(Ie)_fishlike_prompt]} )) && pass_check prompt_hook || fail_check prompt_hook
-      [[ -n "${LS_COLORS:-}${LSCOLORS:-}" ]] && pass_check colors || fail_check colors
-      ls / >/dev/null 2>&1 && pass_check ls_alias || fail_check ls_alias
-      print "prompt=$(print -P -- \"$PROMPT\" | tr -d \"\\n\")"
-      print "VERIFY=$(( fail == 0 ? 0 : 1 ))"
-      exit $fail
-    ' 2>"$stderr_file"
-  )"; then
-    verify_status=0
-  else
-    verify_status=$?
-  fi
-
-  printf '%s\n' "$report" | sed 's/^/    /'
-  if (( verify_status != 0 )); then
-    [[ -s "$stderr_file" ]] && tail -n 30 "$stderr_file" >&2
-    die "verification failed"
-  fi
-  printf '%s\n' "$report" | grep -q '^VERIFY=0$' || die "verification report was incomplete"
-  ok "verification passed"
+  have chsh || { warn "chsh unavailable"; return 0; }
+  if (( FLAG_DRY_RUN )); then log "would chsh -s $zsh_path"; return 0; fi
+  chsh -s "$zsh_path" || warn "chsh failed"
 }
 
 main() {
@@ -1583,40 +694,28 @@ main() {
     return 0
   fi
 
-  printf '%s
-' "${C_BOLD}fishlike-zsh installer v${INSTALLER_VERSION}${C_RESET}"
-  printf '  target: %s
-' "$HOME"
-  (( FLAG_DRY_RUN )) && printf '  mode: preview only
-'
-  printf '
-'
+  printf '%s\n' "${C_BOLD}fishlike-zsh installer v${INSTALLER_VERSION}${C_RESET}"
+  printf '  target: %s  (latest from network: %s@%s)\n' "$HOME" "$ZISH_REPO" "$ZISH_REF"
+  (( FLAG_DRY_RUN )) && printf '  mode: dry-run\n'
+  printf '\n'
 
-  preflight
-
-  install_system_packages
-  require_runtime_dependencies
-  resolve_share_payload
-  install_fzf_userland
+  ensure_deps
+  resolve_share
+  install_fzf
   install_antidote
-  prepare_plugin_cache
-  install_managed_share
-  build_plugin_bundle
-  update_zshrc_loader
+  install_share_files
+  build_plugins
+  update_zshrc
   verify
-  write_state_file
+  write_state
   maybe_chsh
 
   echo
-  ok "done. Open a new terminal, or run: exec zsh -l"
-  printf '  managed config: %s
-' "$FISHLIKE_CONFIG_DIR"
-  printf '  backups:        %s
-' "$FISHLIKE_BACKUP_DIR"
-  printf '  local overrides: %s
-' "$LOCAL_RC"
-  printf '  uninstall:      bash install-fishlike-zsh.sh --uninstall
-'
+  ok "done. Open a new terminal, or: exec zsh -l"
+  printf '  config:    %s\n' "$FISHLIKE_CONFIG_DIR"
+  printf '  backups:   %s\n' "$FISHLIKE_BACKUP_DIR"
+  printf '  local:     %s\n' "$LOCAL_RC"
+  printf '  uninstall: bash install-fishlike-zsh.sh --uninstall\n'
 }
 
 main "$@"
