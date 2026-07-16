@@ -65,6 +65,13 @@ setopt PUSHD_IGNORE_DUPS
 setopt INTERACTIVE_COMMENTS
 setopt NO_BEEP
 setopt PROMPT_SUBST
+# Required by ez-compinit (`*(.:t)`) and most modern zsh plugins.
+# Without this, plugin load fails with: parse error near `('
+setopt EXTENDED_GLOB
+# Ensure `source plugin.zsh` sets $0 to that file. Some plugins assign to $0
+# and later plugins (e.g. autosuggestions) resolve paths from $0; a sticky
+# wrong $0 makes them look in the previous plugin's directory.
+setopt FUNCTION_ARGZERO
 
 autoload -Uz colors add-zsh-hook
 colors
@@ -283,26 +290,45 @@ _fishlike_build_plugin_bundle() {
   fi
 }
 
+# Load the antidote static bundle with the option set plugins actually need.
+# ez-compinit uses zsh glob qualifiers (`*(.:t)`), which require EXTENDED_GLOB;
+# without it the load aborts with: parse error near `('
+_fishlike_source_plugin_bundle() {
+  emulate -L zsh
+  setopt extended_glob function_argzero
+  builtin source -- "$1"
+}
+
 typeset -gi _fishlike_plugins_ready=0
 if [[ -r "$FISHLIKE_ANTIDOTE_DIR/antidote.zsh" && -r "$FISHLIKE_PLUGIN_FILE" ]]; then
-  source "$FISHLIKE_ANTIDOTE_DIR/antidote.zsh"
-  if ! _fishlike_plugin_files_present; then
-    _fishlike_quarantine_incomplete_plugins || \
-      print -u2 'fishlike-zsh: failed to preserve an incomplete plugin cache'
-  fi
-  if ! _fishlike_bundle_is_managed ||
-      ! _fishlike_plugin_files_present ||
-      [[ ! "$FISHLIKE_PLUGIN_BUNDLE" -nt "$FISHLIKE_PLUGIN_FILE" ]]; then
-    _fishlike_build_plugin_bundle || print -u2 'fishlike-zsh: failed to build plugin bundle'
-  fi
-  if _fishlike_bundle_is_managed && _fishlike_plugin_files_present; then
-    if source "$FISHLIKE_PLUGIN_BUNDLE"; then
-      _fishlike_plugins_ready=1
-    else
-      print -u2 'fishlike-zsh: failed to load plugin bundle'
+  # Re-assert stdlib right before Antidote; some zprofile/zshrc snippets
+  # still touch fpath between early setup and plugin load.
+  if ! autoload -Uz is-at-least 2>/dev/null || ! is-at-least 5.4 2>/dev/null; then
+    print -u2 -- 'fishlike-zsh: is-at-least unavailable immediately before plugin load'
+    print -u2 -- 'fishlike-zsh: dump fpath for debugging:'
+    print -u2 -l -- $fpath
+  else
+    source "$FISHLIKE_ANTIDOTE_DIR/antidote.zsh"
+    if ! _fishlike_plugin_files_present; then
+      _fishlike_quarantine_incomplete_plugins || \
+        print -u2 'fishlike-zsh: failed to preserve an incomplete plugin cache'
     fi
-  elif ! _fishlike_plugin_files_present; then
-    print -u2 'fishlike-zsh: plugin cache is incomplete; plugins were not loaded'
+    if ! _fishlike_bundle_is_managed ||
+        ! _fishlike_plugin_files_present ||
+        [[ ! "$FISHLIKE_PLUGIN_BUNDLE" -nt "$FISHLIKE_PLUGIN_FILE" ]]; then
+      _fishlike_build_plugin_bundle || print -u2 'fishlike-zsh: failed to build plugin bundle'
+    fi
+    if _fishlike_bundle_is_managed && _fishlike_plugin_files_present; then
+      # Isolate $0 leakage between plugins: source each `source '...'` line in a
+      # nested context when the bundle is the usual antidote static format.
+      if _fishlike_source_plugin_bundle "$FISHLIKE_PLUGIN_BUNDLE"; then
+        _fishlike_plugins_ready=1
+      else
+        print -u2 'fishlike-zsh: failed to load plugin bundle'
+      fi
+    elif ! _fishlike_plugin_files_present; then
+      print -u2 'fishlike-zsh: plugin cache is incomplete; plugins were not loaded'
+    fi
   fi
 fi
 if (( ! _fishlike_plugins_ready )); then
@@ -310,7 +336,7 @@ if (( ! _fishlike_plugins_ready )); then
 fi
 unset -f _fishlike_bundle_is_managed _fishlike_plugin_files_present \
   _fishlike_quarantine_incomplete_repo _fishlike_quarantine_incomplete_plugins \
-  _fishlike_build_plugin_bundle
+  _fishlike_build_plugin_bundle _fishlike_source_plugin_bundle
 
 # ---- directory history -----------------------------------------------------
 typeset -ga _FISHLIKE_DIRHIST
