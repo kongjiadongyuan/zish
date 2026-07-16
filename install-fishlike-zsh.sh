@@ -14,6 +14,7 @@
 #   - every changed file is backed up first
 #   - unmanaged files in the installer namespace require --force
 #   - Antidote, plugins, fzf, and share/ payload are pinned and verified
+#   - plugin bundle is built once at install time; runtime only sources it
 #   - managed text files always use mode 0600
 #   - system packages install only with --install-deps
 #   - --dry-run performs no downloads and leaves no files behind
@@ -29,7 +30,7 @@
 
 set -euo pipefail
 
-INSTALLER_VERSION="2.3.0"
+INSTALLER_VERSION="2.4.0"
 MIN_ZSH_VERSION="5.4.2"
 
 # Immutable dependency pins. Update these deliberately and test as a set.
@@ -42,7 +43,7 @@ FZF_BASE_URL="https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}"
 # Runtime payload in share/. Hashes pin curl|bash fetches of those files.
 ZISH_SHARE_REF="${ZISH_SHARE_REF:-main}"
 ZISH_SHARE_BASE="${ZISH_SHARE_BASE:-https://raw.githubusercontent.com/kongjiadongyuan/zish/${ZISH_SHARE_REF}/share}"
-SHARE_CONFIG_SHA256="f6f09e9452c81b9ced7d2c9d54995b4b9c8f9258dadf9765be6e658717223e61"
+SHARE_CONFIG_SHA256="d7810532ee1fd1cba7c18b952f9a9bfa5498488b1611c302378cf3e701022daa"
 SHARE_PLUGINS_SHA256="ce4715443f75f52630439737635735076499c43b21847d925c2ab7737f552326"
 
 # Loaded from share/plugins.txt after resolve_share_payload.
@@ -948,22 +949,73 @@ preflight() {
   fi
 }
 
-prepare_plugin_bundle() {
-  [[ -f "$ZSH_PLUGINS_ZSH" ]] || return 0
-  if is_managed_bundle "$ZSH_PLUGINS_ZSH" && plugin_cache_matches_pins; then
+# Build plugins.zsh once at install time. Runtime config only sources it.
+build_plugin_bundle() {
+  log "building pinned plugin bundle (install-time only)"
+
+  if (( FLAG_DRY_RUN )); then
+    log "would run antidote bundle -> $ZSH_PLUGINS_ZSH"
     return 0
   fi
 
-  if ! is_managed_bundle "$ZSH_PLUGINS_ZSH"; then
+  [[ -r "$ANTIDOTE_DIR/antidote.zsh" ]] || die "Antidote is missing: $ANTIDOTE_DIR"
+  [[ -r "$ZSH_PLUGINS_TXT" ]] || die "plugin manifest missing: $ZSH_PLUGINS_TXT"
+
+  if [[ -f "$ZSH_PLUGINS_ZSH" ]] && ! is_managed_bundle "$ZSH_PLUGINS_ZSH"; then
+    require_replacement_approval "$ZSH_PLUGINS_ZSH"
     backup_file "$ZSH_PLUGINS_ZSH"
-  else
-    log "discarding stale generated plugin bundle"
+  elif [[ -f "$ZSH_PLUGINS_ZSH" ]] && is_managed_bundle "$ZSH_PLUGINS_ZSH" \
+      && plugin_cache_matches_pins \
+      && [[ "$ZSH_PLUGINS_ZSH" -nt "$ZSH_PLUGINS_TXT" ]]; then
+    ok "plugin bundle already current"
+    return 0
   fi
-  if (( FLAG_DRY_RUN )); then
-    log "would remove plugin bundle $ZSH_PLUGINS_ZSH"
-  else
-    rm -f -- "$ZSH_PLUGINS_ZSH"
+
+  mkdir -p "$(dirname "$ZSH_PLUGINS_ZSH")" "$ANTIDOTE_CACHE_DIR"
+
+  local tmp err
+  tmp="$(mktemp "$ZSH_PLUGINS_ZSH.tmp.XXXXXX")"
+  err="$(mktemp "${TMPDIR:-/tmp}/fishlike-bundle.XXXXXX")"
+  register_temp "$tmp"
+  register_temp "$err"
+
+  # Clone pins + emit a static source list. No user zshrc involved.
+  if ! env \
+      ANTIDOTE_HOME="$ANTIDOTE_CACHE_DIR" \
+      FISHLIKE_ANTIDOTE_DIR="$ANTIDOTE_DIR" \
+      FISHLIKE_PLUGIN_FILE="$ZSH_PLUGINS_TXT" \
+      FISHLIKE_BUNDLE_MARKER="$BUNDLE_MARKER" \
+      zsh -fc '
+        emulate zsh
+        setopt EXTENDED_GLOB
+        typeset -g ANTIDOTE_HOME="$ANTIDOTE_HOME"
+        source "$FISHLIKE_ANTIDOTE_DIR/antidote.zsh" || exit 1
+        zstyle ":antidote:bundle" path-style full
+        zstyle -d ":antidote:bundle" use-friendly-names 2>/dev/null || true
+        print -r -- "$FISHLIKE_BUNDLE_MARKER"
+        antidote bundle <"$FISHLIKE_PLUGIN_FILE"
+      ' >"$tmp" 2>"$err"; then
+    warn "antidote bundle failed:"
+    tail -n 40 "$err" >&2 || true
+    rm -f -- "$tmp"
+    die "could not build plugin bundle"
   fi
+
+  if ! grep -qE '^source ' "$tmp"; then
+    tail -n 40 "$err" >&2 || true
+    rm -f -- "$tmp"
+    die "plugin bundle has no source lines"
+  fi
+
+  chmod 0600 "$tmp"
+  if ! mv -f "$tmp" "$ZSH_PLUGINS_ZSH"; then
+    rm -f -- "$tmp"
+    die "failed to write $ZSH_PLUGINS_ZSH"
+  fi
+
+  plugin_cache_matches_pins || die "plugin cache does not match pins after bundling"
+  is_managed_bundle "$ZSH_PLUGINS_ZSH" || die "plugin bundle missing managed marker"
+  ok "plugin bundle ready: $ZSH_PLUGINS_ZSH"
 }
 
 write_managed_file_from_path() {
@@ -1255,30 +1307,6 @@ update_zshrc_loader() {
   ok "updated loader in $ZSHRC"
 }
 
-bootstrap_plugins() {
-  log "bootstrapping pinned zsh plugins"
-  if (( FLAG_DRY_RUN )); then
-    # -l: login shell so ~/.zprofile is exercised (common source of sticky `emulate sh`)
-    run env ZDOTDIR="$ZDOTDIR" zsh -lic 'exit 0'
-    return 0
-  fi
-
-  local logfile
-  logfile="$(mktemp "${TMPDIR:-/tmp}/fishlike-zsh-bootstrap.XXXXXX")"
-  register_temp "$logfile"
-  if ! env ZDOTDIR="$ZDOTDIR" zsh -lic 'exit 0' >"$logfile" 2>&1; then
-    warn "zsh plugin bootstrap failed:"
-    tail -n 40 "$logfile" >&2 || true
-    die "could not bootstrap zsh plugins"
-  fi
-
-  if ! is_managed_bundle "$ZSH_PLUGINS_ZSH"; then
-    tail -n 40 "$logfile" >&2 || true
-    die "managed plugin bundle was not created: $ZSH_PLUGINS_ZSH"
-  fi
-  ok "plugin bundle ready"
-}
-
 append_shell_to_etc_shells() {
   local shell_path="$1"
   if (( FLAG_DRY_RUN )); then
@@ -1383,6 +1411,7 @@ verify() {
   stderr_file="$(mktemp "${TMPDIR:-/tmp}/fishlike-zsh-verify.XXXXXX")"
   register_temp "$stderr_file"
 
+  # Login interactive shell: exercises ~/.zprofile (sticky emulate sh, etc.).
   if report="$(
     env ZDOTDIR="$ZDOTDIR" zsh -lic '
       typeset -i fail=0
@@ -1391,21 +1420,30 @@ verify() {
 
       print "zsh=$(zsh --version 2>/dev/null | head -1)"
       print "fzf=$(command -v fzf) $(fzf --version 2>/dev/null | head -1)"
-      [[ -r "$FISHLIKE_ANTIDOTE_DIR/antidote.zsh" ]] && pass_check antidote || fail_check antidote
+      print "emulate=$(emulate 2>/dev/null)"
+      [[ "$(emulate 2>/dev/null)" == zsh ]] && pass_check emulate_zsh || fail_check emulate_zsh
       [[ -r "$FISHLIKE_PLUGIN_FILE" ]] && pass_check plugin_manifest || fail_check plugin_manifest
       [[ -r "$FISHLIKE_PLUGIN_BUNDLE" ]] && pass_check plugin_bundle || fail_check plugin_bundle
-      [[ "$ANTIDOTE_HOME" == "$FISHLIKE_ANTIDOTE_HOME" ]] && pass_check isolated_cache || fail_check isolated_cache
+      # Bundle must only reference the fishlike-zsh plugin cache (not ~/.cache/antidote).
+      if [[ -r "$FISHLIKE_PLUGIN_BUNDLE" ]] \
+          && ! grep -E "^source " "$FISHLIKE_PLUGIN_BUNDLE" | grep -qv "fishlike-zsh/plugins"; then
+        pass_check isolated_cache
+      else
+        fail_check isolated_cache
+      fi
+      # Antidote is install-time only; interactive config must not define it.
+      (( ! $+functions[antidote] )) && pass_check no_runtime_antidote || fail_check no_runtime_antidote
       [[ "$(bindkey "^I" 2>/dev/null)" == *fzf-tab* ]] && pass_check fzf_tab || fail_check fzf_tab
       [[ "$(bindkey "^[[A" 2>/dev/null)" == *history-substring-search-up* ]] && pass_check history_up || fail_check history_up
-      [[ "$(bindkey "^R" 2>/dev/null)" == *fishlike-fzf-history* ]] && pass_check ctrl_r || fail_check ctrl_r
-      [[ "$(bindkey "^[[1;3C" 2>/dev/null)" == *fishlike-nextd-or-forward-word* ]] && pass_check alt_right || fail_check alt_right
+      [[ "$(bindkey "^R" 2>/dev/null)" == *_fishlike_history* ]] && pass_check ctrl_r || fail_check ctrl_r
+      [[ "$(bindkey "^[[1;3C" 2>/dev/null)" == *_fishlike_alt_right* ]] && pass_check alt_right || fail_check alt_right
       (( $+ZSH_AUTOSUGGEST_STRATEGY )) && pass_check autosuggest || fail_check autosuggest
       (( $+functions[_zsh_highlight] || $+ZSH_HIGHLIGHT_VERSION )) && pass_check highlight || fail_check highlight
       (( $+functions[abbr] || $+commands[abbr] )) && pass_check abbr || fail_check abbr
       (( $+functions[prevd] && $+functions[nextd] && $+functions[cdh] )) && pass_check dirhist || fail_check dirhist
+      (( ${precmd_functions[(Ie)_fishlike_prompt]} )) && pass_check prompt_hook || fail_check prompt_hook
       [[ -n "${LS_COLORS:-}${LSCOLORS:-}" ]] && pass_check colors || fail_check colors
       ls / >/dev/null 2>&1 && pass_check ls_alias || fail_check ls_alias
-      prompt_fish_style 2>/dev/null || true
       print "prompt=$(print -P -- \"$PROMPT\" | tr -d \"\\n\")"
       print "VERIFY=$(( fail == 0 ? 0 : 1 ))"
       exit $fail
@@ -1443,9 +1481,8 @@ main() {
   install_antidote
   prepare_plugin_cache
   install_managed_share
-  prepare_plugin_bundle
+  build_plugin_bundle
   update_zshrc_loader
-  bootstrap_plugins
   verify
   maybe_chsh
 

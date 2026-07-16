@@ -37,9 +37,11 @@ bash install-fishlike-zsh.sh
 - `~/.config/fishlike-zsh/env.zsh` — 本机路径
 - `~/.config/fishlike-zsh/config.zsh` — `share/config.zsh` 的副本
 - `~/.config/fishlike-zsh/plugins.txt` — `share/plugins.txt` 的副本
+- `~/.config/fishlike-zsh/plugins.zsh` — **安装时**生成的静态 `source` 列表（启动时不再跑 Antidote）
+- 插件克隆目录：`~/.cache/fishlike-zsh/plugins/`
 - `~/.zshrc` 中的简短 loader（先 `env.zsh` 再 `config.zsh`）
 
-本机覆盖：`${ZDOTDIR:-$HOME}/.zshrc.local`。
+启动只读：插件坏了请重跑安装器。本机覆盖：`${ZDOTDIR:-$HOME}/.zshrc.local`。
 
 ## 选项
 
@@ -64,10 +66,11 @@ bash install-fishlike-zsh.sh
 ## 行为
 
 - 保留现有配置，并在修改前创建备份。
-- Antidote、插件、fzf 以及 `share/` 载荷都固定版本并校验校验和。
+- Antidote 仅在安装期用来生成插件 bundle；交互 shell 不再加载 Antidote。
+- 插件、fzf 与 `share/` 载荷固定版本并校验校验和。
 - 托管文本文件统一权限 `0600`。
-- 重复运行时会修复缺失或损坏的托管文件。
-- 插件异常时退回基础补全和标准按键。
+- 重复运行安装器可修复缺失或损坏的托管文件。
+- 验证使用登录交互 shell（`zsh -lic`）。
 - 只有安装验证成功并得到明确同意后，才会修改登录 Shell。
 
 需要 Zsh 5.4.2 或更高版本以及 Git。详情见 `bash install-fishlike-zsh.sh --help`。

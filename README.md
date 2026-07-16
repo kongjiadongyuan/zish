@@ -37,9 +37,11 @@ On install the script writes:
 - `~/.config/fishlike-zsh/env.zsh` — machine paths
 - `~/.config/fishlike-zsh/config.zsh` — copy of `share/config.zsh`
 - `~/.config/fishlike-zsh/plugins.txt` — copy of `share/plugins.txt`
+- `~/.config/fishlike-zsh/plugins.zsh` — **install-time** static source list (Antidote is not used at shell startup)
+- plugin clones under `~/.cache/fishlike-zsh/plugins/`
 - a short loader in `~/.zshrc` that sources `env.zsh` then `config.zsh`
 
-Local overrides: `${ZDOTDIR:-$HOME}/.zshrc.local`.
+Startup is read-only: re-run the installer to repair plugins. Local overrides: `${ZDOTDIR:-$HOME}/.zshrc.local`.
 
 ## Options
 
@@ -64,10 +66,11 @@ Missing system tools are printed with install hints by default. They are only au
 ## Behavior
 
 - Existing configuration is preserved and backed up before changes.
-- Antidote, plugins, fzf, and the `share/` payload are pinned and checksum-verified.
+- Antidote is used only during install to materialize the plugin bundle; interactive shells do not load Antidote.
+- Plugins, fzf, and the `share/` payload are pinned and checksum-verified.
 - Managed text files are always mode `0600`.
 - Re-running the installer repairs missing or damaged managed files.
-- Plugin failures fall back to basic completion and standard key bindings.
+- Verification uses a login interactive shell (`zsh -lic`).
 - The login shell is changed only after a successful install and explicit approval.
 
 Requires Zsh 5.4.2 or newer and Git. Run `bash install-fishlike-zsh.sh --help` for details.
