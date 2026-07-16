@@ -1,0 +1,451 @@
+# Managed by install-fishlike-zsh.sh; edits may be replaced.
+# Runtime config. Paths come from env.zsh (written by the installer).
+
+# ---- history and shell behavior --------------------------------------------
+export HISTFILE="${HISTFILE:-${ZDOTDIR:-$HOME}/.zsh_history}"
+export HISTSIZE="${HISTSIZE:-100000}"
+export SAVEHIST="${SAVEHIST:-100000}"
+
+setopt HIST_IGNORE_ALL_DUPS
+setopt HIST_REDUCE_BLANKS
+setopt SHARE_HISTORY
+setopt EXTENDED_HISTORY
+setopt AUTO_CD
+setopt AUTO_PUSHD
+setopt PUSHD_IGNORE_DUPS
+setopt INTERACTIVE_COMMENTS
+setopt NO_BEEP
+setopt PROMPT_SUBST
+
+autoload -Uz colors add-zsh-hook
+colors
+
+# ---- prompt ----------------------------------------------------------------
+# Branch via git(1). No vcs_info autoload dependency.
+prompt_pwd_fish_style() {
+  local path="${PWD/#$HOME/~}"
+  local prefix='' part
+  local -i i
+  local -a parts short_parts
+
+  if [[ "$path" == / ]]; then
+    print -r -- /
+    return
+  fi
+  if [[ "$path" == /* ]]; then
+    prefix='/'
+    path="${path#/}"
+  fi
+
+  parts=("${(@s:/:)path}")
+  for (( i = 1; i <= ${#parts}; i++ )); do
+    part="${parts[$i]}"
+    [[ -z "$part" ]] && continue
+    if (( i == ${#parts} )) || [[ "$part" == '~' ]]; then
+      short_parts+=("$part")
+    elif [[ "$part" == .* ]]; then
+      short_parts+=("${part[1,2]}")
+    else
+      short_parts+=("${part[1,1]}")
+    fi
+  done
+  print -r -- "${prefix}${(j:/:)short_parts}"
+}
+
+prompt_git_segment() {
+  command -v git >/dev/null 2>&1 || return 0
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
+  local branch
+  branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null \
+    || git rev-parse --short HEAD 2>/dev/null)" || return 0
+  [[ -n "$branch" ]] || return 0
+  print -r -- " %F{magenta}(${branch})%f"
+}
+
+prompt_fish_style() {
+  local last_status=$?
+  prompt_pwd_short="$(prompt_pwd_fish_style)"
+  prompt_git="$(prompt_git_segment)"
+  if (( last_status )); then
+    prompt_status=" %B%F{red}[$last_status]%f%b"
+  else
+    prompt_status=''
+  fi
+}
+
+case " ${precmd_functions[*]} " in
+  *' prompt_fish_style '*) ;;
+  *) precmd_functions+=(prompt_fish_style) ;;
+esac
+PROMPT='%B%F{green}%n%b%f@%m %F{green}${prompt_pwd_short}%f${prompt_git}${prompt_status}%(!.#.>) '
+
+# ---- terminal title --------------------------------------------------------
+_fishlike_title_precmd() {
+  [[ -t 1 && "${TERM:-}" != dumb ]] && print -Pn -- '\e]0;%n@%m: %~\a'
+  return 0
+}
+_fishlike_title_preexec() {
+  [[ -t 1 && "${TERM:-}" != dumb ]] && print -Pn -- "\e]0;${1%% *}\a"
+  return 0
+}
+add-zsh-hook -d precmd _fishlike_title_precmd 2>/dev/null || true
+add-zsh-hook -d preexec _fishlike_title_preexec 2>/dev/null || true
+add-zsh-hook precmd _fishlike_title_precmd
+add-zsh-hook preexec _fishlike_title_preexec
+
+# ---- path and portable colors ----------------------------------------------
+path_prepend() {
+  [[ -d "$1" ]] || return 0
+  case ":$PATH:" in
+    *":$1:"*) ;;
+    *) export PATH="$1:$PATH" ;;
+  esac
+}
+path_prepend "$FISHLIKE_LOCAL_BIN"
+
+if command -v dircolors >/dev/null 2>&1; then
+  if [[ -r "$HOME/.dircolors" ]]; then
+    eval "$(dircolors -b "$HOME/.dircolors")"
+  else
+    eval "$(dircolors -b)"
+  fi
+fi
+if [[ -z "${LS_COLORS:-}" ]]; then
+  export LS_COLORS='rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:ex=01;32:tw=30;42:ow=34;42:'
+fi
+export CLICOLOR="${CLICOLOR:-1}"
+export LSCOLORS="${LSCOLORS:-exfxcxdxbxegedabagacad}"
+
+typeset -g _FISHLIKE_LS_COLOR_FLAG=
+if command ls --color=auto / >/dev/null 2>&1; then
+  _FISHLIKE_LS_COLOR_FLAG=gnu
+elif command ls -G / >/dev/null 2>&1; then
+  _FISHLIKE_LS_COLOR_FLAG=bsd
+fi
+
+# ---- completion and plugin configuration -----------------------------------
+zstyle ':completion:*' menu no
+zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}'
+zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
+zstyle ':completion:*' group-name ''
+zstyle ':fzf-tab:*' fzf-command fzf
+zstyle ':fzf-tab:*' switch-group '<' '>'
+if [[ "$_FISHLIKE_LS_COLOR_FLAG" == gnu ]]; then
+  zstyle ':fzf-tab:complete:cd:*' fzf-preview 'ls -la --color=always -- $realpath 2>/dev/null | head -200'
+else
+  zstyle ':fzf-tab:complete:cd:*' fzf-preview 'CLICOLOR_FORCE=1 ls -laG -- $realpath 2>/dev/null | head -200'
+fi
+
+ZSH_AUTOSUGGEST_STRATEGY=(history completion)
+ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=8'
+HISTORY_SUBSTRING_SEARCH_ENSURE_UNIQUE=1
+HISTORY_SUBSTRING_SEARCH_HIGHLIGHT_FOUND='fg=green,bold'
+HISTORY_SUBSTRING_SEARCH_HIGHLIGHT_NOT_FOUND='fg=red,bold'
+
+typeset -g ANTIDOTE_HOME="$FISHLIKE_ANTIDOTE_HOME"
+zstyle ':antidote:bundle' path-style full
+zstyle -d ':antidote:bundle' use-friendly-names 2>/dev/null || true
+zstyle ':antidote:git' site github.com
+zstyle ':antidote:git' protocol https
+zstyle ':antidote:git' cmd git
+
+_fishlike_bundle_is_managed() {
+  local first=''
+  [[ -r "$FISHLIKE_PLUGIN_BUNDLE" ]] || return 1
+  IFS= read -r first <"$FISHLIKE_PLUGIN_BUNDLE" || true
+  [[ "$first" == '# Generated by install-fishlike-zsh.sh; do not edit.' ]]
+}
+
+_fishlike_plugin_files_present() {
+  local root="$FISHLIKE_ANTIDOTE_HOME/github.com"
+  [[
+    ! -L "$root/zsh-users/zsh-completions" &&
+    -d "$root/zsh-users/zsh-completions/.git" &&
+    -d "$root/zsh-users/zsh-completions/src" &&
+    ! -L "$root/mattmc3/ez-compinit" &&
+    -d "$root/mattmc3/ez-compinit/.git" &&
+    -r "$root/mattmc3/ez-compinit/ez-compinit.plugin.zsh" &&
+    ! -L "$root/Aloxaf/fzf-tab" &&
+    -d "$root/Aloxaf/fzf-tab/.git" &&
+    -r "$root/Aloxaf/fzf-tab/fzf-tab.plugin.zsh" &&
+    ! -L "$root/zsh-users/zsh-autosuggestions" &&
+    -d "$root/zsh-users/zsh-autosuggestions/.git" &&
+    -r "$root/zsh-users/zsh-autosuggestions/zsh-autosuggestions.plugin.zsh" &&
+    ! -L "$root/zsh-users/zsh-history-substring-search" &&
+    -d "$root/zsh-users/zsh-history-substring-search/.git" &&
+    -r "$root/zsh-users/zsh-history-substring-search/zsh-history-substring-search.plugin.zsh" &&
+    ! -L "$root/olets/zsh-abbr" &&
+    -d "$root/olets/zsh-abbr/.git" &&
+    -r "$root/olets/zsh-abbr/zsh-abbr.plugin.zsh" &&
+    ! -L "$root/zsh-users/zsh-syntax-highlighting" &&
+    -d "$root/zsh-users/zsh-syntax-highlighting/.git" &&
+    -r "$root/zsh-users/zsh-syntax-highlighting/zsh-syntax-highlighting.plugin.zsh"
+  ]]
+}
+
+_fishlike_quarantine_incomplete_repo() {
+  local repo="$1" required="$2" kind="$3" backup
+  [[ -e "$repo" || -L "$repo" ]] || return 0
+  if [[ ! -L "$repo" && -d "$repo/.git" ]]; then
+    case "$kind" in
+      dir) [[ -d "$required" ]] && return 0 ;;
+      file) [[ -r "$required" ]] && return 0 ;;
+    esac
+  fi
+
+  backup="${repo}.incomplete"
+  while [[ -e "$backup" || -L "$backup" ]]; do
+    backup+='.bak'
+  done
+  print -u2 -- "fishlike-zsh: preserving incomplete plugin cache at $backup"
+  command mv "$repo" "$backup"
+}
+
+_fishlike_quarantine_incomplete_plugins() {
+  local root="$FISHLIKE_ANTIDOTE_HOME/github.com"
+  _fishlike_quarantine_incomplete_repo \
+    "$root/zsh-users/zsh-completions" "$root/zsh-users/zsh-completions/src" dir || return 1
+  _fishlike_quarantine_incomplete_repo \
+    "$root/mattmc3/ez-compinit" "$root/mattmc3/ez-compinit/ez-compinit.plugin.zsh" file || return 1
+  _fishlike_quarantine_incomplete_repo \
+    "$root/Aloxaf/fzf-tab" "$root/Aloxaf/fzf-tab/fzf-tab.plugin.zsh" file || return 1
+  _fishlike_quarantine_incomplete_repo \
+    "$root/zsh-users/zsh-autosuggestions" "$root/zsh-users/zsh-autosuggestions/zsh-autosuggestions.plugin.zsh" file || return 1
+  _fishlike_quarantine_incomplete_repo \
+    "$root/zsh-users/zsh-history-substring-search" "$root/zsh-users/zsh-history-substring-search/zsh-history-substring-search.plugin.zsh" file || return 1
+  _fishlike_quarantine_incomplete_repo \
+    "$root/olets/zsh-abbr" "$root/olets/zsh-abbr/zsh-abbr.plugin.zsh" file || return 1
+  _fishlike_quarantine_incomplete_repo \
+    "$root/zsh-users/zsh-syntax-highlighting" "$root/zsh-users/zsh-syntax-highlighting/zsh-syntax-highlighting.plugin.zsh" file || return 1
+}
+
+_fishlike_build_plugin_bundle() {
+  local tmp
+  tmp="$(mktemp "${FISHLIKE_PLUGIN_BUNDLE}.tmp.XXXXXX")" || return 1
+  if {
+    print -r -- '# Generated by install-fishlike-zsh.sh; do not edit.'
+    antidote bundle <"$FISHLIKE_PLUGIN_FILE"
+  } >|"$tmp"; then
+    chmod 0600 "$tmp"
+    mv -f "$tmp" "$FISHLIKE_PLUGIN_BUNDLE"
+  else
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
+typeset -gi _fishlike_plugins_ready=0
+if [[ -r "$FISHLIKE_ANTIDOTE_DIR/antidote.zsh" && -r "$FISHLIKE_PLUGIN_FILE" ]]; then
+  source "$FISHLIKE_ANTIDOTE_DIR/antidote.zsh"
+  if ! _fishlike_plugin_files_present; then
+    _fishlike_quarantine_incomplete_plugins || \
+      print -u2 'fishlike-zsh: failed to preserve an incomplete plugin cache'
+  fi
+  if ! _fishlike_bundle_is_managed ||
+      ! _fishlike_plugin_files_present ||
+      [[ ! "$FISHLIKE_PLUGIN_BUNDLE" -nt "$FISHLIKE_PLUGIN_FILE" ]]; then
+    _fishlike_build_plugin_bundle || print -u2 'fishlike-zsh: failed to build plugin bundle'
+  fi
+  if _fishlike_bundle_is_managed && _fishlike_plugin_files_present; then
+    if source "$FISHLIKE_PLUGIN_BUNDLE"; then
+      _fishlike_plugins_ready=1
+    else
+      print -u2 'fishlike-zsh: failed to load plugin bundle'
+    fi
+  elif ! _fishlike_plugin_files_present; then
+    print -u2 'fishlike-zsh: plugin cache is incomplete; plugins were not loaded'
+  fi
+fi
+if (( ! _fishlike_plugins_ready )); then
+  autoload -Uz compinit && compinit -C
+fi
+unset -f _fishlike_bundle_is_managed _fishlike_plugin_files_present \
+  _fishlike_quarantine_incomplete_repo _fishlike_quarantine_incomplete_plugins \
+  _fishlike_build_plugin_bundle
+
+# ---- directory history -----------------------------------------------------
+typeset -ga _FISHLIKE_DIRHIST
+typeset -gi _FISHLIKE_DIRHIST_POS=0
+typeset -gi _FISHLIKE_DIRHIST_NAV=0
+typeset -gi _FISHLIKE_DIRHIST_MAX=50
+
+_fishlike_dirhist_add() {
+  (( _FISHLIKE_DIRHIST_NAV )) && return 0
+  if (( _FISHLIKE_DIRHIST_POS > 0 && _FISHLIKE_DIRHIST_POS < $#_FISHLIKE_DIRHIST )); then
+    _FISHLIKE_DIRHIST=("${_FISHLIKE_DIRHIST[@]:0:$_FISHLIKE_DIRHIST_POS}")
+  fi
+  if (( $#_FISHLIKE_DIRHIST == 0 )) || [[ "$_FISHLIKE_DIRHIST[-1]" != "$PWD" ]]; then
+    _FISHLIKE_DIRHIST+=("$PWD")
+    if (( $#_FISHLIKE_DIRHIST > _FISHLIKE_DIRHIST_MAX )); then
+      _FISHLIKE_DIRHIST=("${_FISHLIKE_DIRHIST[@]: -$_FISHLIKE_DIRHIST_MAX}")
+    fi
+  fi
+  _FISHLIKE_DIRHIST_POS=$#_FISHLIKE_DIRHIST
+}
+
+prevd() {
+  if (( _FISHLIKE_DIRHIST_POS <= 1 )); then
+    print -u2 'prevd: beginning of directory history'
+    return 1
+  fi
+  _FISHLIKE_DIRHIST_NAV=1
+  local old_pos=$_FISHLIKE_DIRHIST_POS
+  _FISHLIKE_DIRHIST_POS=$((_FISHLIKE_DIRHIST_POS - 1))
+  if ! cd -- "$_FISHLIKE_DIRHIST[$_FISHLIKE_DIRHIST_POS]"; then
+    _FISHLIKE_DIRHIST_POS=$old_pos
+    _FISHLIKE_DIRHIST_NAV=0
+    return 1
+  fi
+  _FISHLIKE_DIRHIST_NAV=0
+}
+
+nextd() {
+  if (( _FISHLIKE_DIRHIST_POS >= $#_FISHLIKE_DIRHIST )); then
+    print -u2 'nextd: end of directory history'
+    return 1
+  fi
+  _FISHLIKE_DIRHIST_NAV=1
+  local old_pos=$_FISHLIKE_DIRHIST_POS
+  _FISHLIKE_DIRHIST_POS=$((_FISHLIKE_DIRHIST_POS + 1))
+  if ! cd -- "$_FISHLIKE_DIRHIST[$_FISHLIKE_DIRHIST_POS]"; then
+    _FISHLIKE_DIRHIST_POS=$old_pos
+    _FISHLIKE_DIRHIST_NAV=0
+    return 1
+  fi
+  _FISHLIKE_DIRHIST_NAV=0
+}
+
+cdh() {
+  if (( $#_FISHLIKE_DIRHIST == 0 )); then
+    print -u2 'cdh: no directory history'
+    return 1
+  fi
+  local dest
+  if command -v fzf >/dev/null 2>&1; then
+    dest="$(
+      printf '%s\n' "${_FISHLIKE_DIRHIST[@]}" |
+        awk '{printf "%3d  %s\n", NR, $0}' |
+        fzf --height=40% --reverse --tac --prompt='cdh> ' |
+        sed -E 's/^[[:space:]]*[0-9]+[[:space:]]+//'
+    )"
+  else
+    local i=1 d n
+    for d in "${_FISHLIKE_DIRHIST[@]}"; do
+      print -r -- "$i  $d"
+      (( i++ ))
+    done
+    print -n 'cdh number: '
+    read -r n
+    [[ "$n" == <-> && n -ge 1 && n -le $#_FISHLIKE_DIRHIST ]] || return 1
+    dest="$_FISHLIKE_DIRHIST[n]"
+  fi
+  [[ -n "$dest" ]] || return 1
+  cd -- "$dest"
+}
+
+add-zsh-hook -d chpwd _fishlike_dirhist_add 2>/dev/null || true
+add-zsh-hook chpwd _fishlike_dirhist_add
+_FISHLIKE_DIRHIST=("$PWD")
+_FISHLIKE_DIRHIST_POS=1
+
+# ---- interactive widgets and key bindings ---------------------------------
+fishlike-prevd-or-backward-word() {
+  if [[ -z "$BUFFER" && -z "$PREBUFFER" ]]; then
+    prevd 2>/dev/null || true
+    zle reset-prompt
+  else
+    zle backward-word
+  fi
+}
+fishlike-nextd-or-forward-word() {
+  if [[ -z "$BUFFER" && -z "$PREBUFFER" ]]; then
+    nextd 2>/dev/null || true
+    zle reset-prompt
+  else
+    zle forward-word
+  fi
+}
+zle -N fishlike-prevd-or-backward-word
+zle -N fishlike-nextd-or-forward-word
+
+if (( $+functions[_zsh_autosuggest_bind_widgets] )); then
+  _zsh_autosuggest_bind_widgets
+fi
+
+if (( $+commands[fzf] )); then
+  fishlike-fzf-history() {
+    local selected ret
+    selected="$(
+      fc -rln 1 2>/dev/null |
+        awk 'NF && !seen[$0]++' |
+        fzf --height=40% --reverse --tiebreak=index --query="${LBUFFER}" --prompt='hist> ' --scheme=history
+    )"
+    ret=$?
+    [[ -n "$selected" ]] && LBUFFER="$selected"
+    zle reset-prompt
+    return $ret
+  }
+  zle -N fishlike-fzf-history
+fi
+
+bindkey -e
+if (( ! $+commands[fzf] )); then
+  bindkey '^I' expand-or-complete
+fi
+if (( $+widgets[history-substring-search-up] && $+widgets[history-substring-search-down] )); then
+  bindkey '^[[A' history-substring-search-up
+  bindkey '^[[B' history-substring-search-down
+  bindkey '^[OA' history-substring-search-up
+  bindkey '^[OB' history-substring-search-down
+else
+  bindkey '^[[A' up-line-or-history
+  bindkey '^[[B' down-line-or-history
+  bindkey '^[OA' up-line-or-history
+  bindkey '^[OB' down-line-or-history
+fi
+bindkey '^[[C' forward-char
+bindkey '^[OC' forward-char
+if (( $+widgets[autosuggest-accept] )); then
+  bindkey '^[[F' autosuggest-accept
+  bindkey '^[OF' autosuggest-accept
+  bindkey '^[[4~' autosuggest-accept
+fi
+bindkey '^[b' fishlike-prevd-or-backward-word
+bindkey '^[f' fishlike-nextd-or-forward-word
+bindkey '^[[1;3D' fishlike-prevd-or-backward-word
+bindkey '^[[1;3C' fishlike-nextd-or-forward-word
+bindkey '^[[1;9D' fishlike-prevd-or-backward-word
+bindkey '^[[1;9C' fishlike-nextd-or-forward-word
+bindkey '^[[1;5C' forward-word
+bindkey '^[[1;5D' backward-word
+if (( $+widgets[fishlike-fzf-history] )); then
+  bindkey '^R' fishlike-fzf-history
+fi
+
+# ---- small, portable aliases ------------------------------------------------
+case "$_FISHLIKE_LS_COLOR_FLAG" in
+  gnu)
+    alias ls='ls --color=auto'
+    alias ll='ls -lah --color=auto'
+    alias la='ls -A --color=auto'
+    alias l='ls -CF --color=auto'
+    ;;
+  bsd)
+    alias ls='ls -G'
+    alias ll='ls -lahG'
+    alias la='ls -AG'
+    alias l='ls -CFG'
+    ;;
+  *)
+    alias ll='ls -lah'
+    alias la='ls -A'
+    alias l='ls -CF'
+    ;;
+esac
+
+unset -f path_prepend
+
+# Machine-local choices belong here, outside the managed configuration.
+if [[ -r "$FISHLIKE_LOCAL_RC" ]]; then
+  source "$FISHLIKE_LOCAL_RC"
+fi

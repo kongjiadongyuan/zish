@@ -13,8 +13,9 @@
 #   - existing ~/.zshrc content is preserved; a small loader block is added
 #   - every changed file is backed up first
 #   - unmanaged files in the installer namespace require --force
-#   - Antidote and all plugins are pinned to immutable commits
-#   - downloaded fzf archives are pinned and SHA-256 verified
+#   - Antidote, plugins, fzf, and share/ payload are pinned and verified
+#   - managed text files always use mode 0600
+#   - system packages install only with --install-deps
 #   - --dry-run performs no downloads and leaves no files behind
 #   - login shell is unchanged unless --chsh is explicitly passed
 #
@@ -28,7 +29,7 @@
 
 set -euo pipefail
 
-INSTALLER_VERSION="2.1.0"
+INSTALLER_VERSION="2.2.0"
 MIN_ZSH_VERSION="5.4.2"
 
 # Immutable dependency pins. Update these deliberately and test as a set.
@@ -38,19 +39,26 @@ ANTIDOTE_REF="0fdd1804974d31556b9b52a3bffd4c48a4cc76ea"
 FZF_VERSION="0.60.3"
 FZF_BASE_URL="https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}"
 
-PLUGIN_ZSH_COMPLETIONS="9903bae60284072de3fa0e3e20965f22368c5694"
-PLUGIN_EZ_COMPINIT="5c9b6da88a463573e26e6846ff164026640ef2f6"
-PLUGIN_FZF_TAB="24105b15714bfec37989ed5c5b6e60f572253019"
-PLUGIN_AUTOSUGGESTIONS="85919cd1ffa7d2d5412f6d3fe437ebdbeeec4fc5"
-PLUGIN_HISTORY_SEARCH="14c8d2e0ffaee98f2df9850b19944f32546fdea5"
-PLUGIN_ZSH_ABBR="889f4772c12b9dbe4965bbd56f2572af0a28fa3b"
-PLUGIN_SYNTAX_HIGHLIGHTING="1d85c692615a25fe2293bdd44b34c217d5d2bf04"
+# Runtime payload in share/. Hashes pin curl|bash fetches of those files.
+ZISH_SHARE_REF="${ZISH_SHARE_REF:-main}"
+ZISH_SHARE_BASE="${ZISH_SHARE_BASE:-https://raw.githubusercontent.com/kongjiadongyuan/zish/${ZISH_SHARE_REF}/share}"
+SHARE_CONFIG_SHA256="52d856a1fc6d8ada6480524b0cc6497c8f5253121203c3cc0704a89966329e83"
+SHARE_PLUGINS_SHA256="ce4715443f75f52630439737635735076499c43b21847d925c2ab7737f552326"
+
+# Loaded from share/plugins.txt after resolve_share_payload.
+PLUGIN_ZSH_COMPLETIONS=""
+PLUGIN_EZ_COMPINIT=""
+PLUGIN_FZF_TAB=""
+PLUGIN_AUTOSUGGESTIONS=""
+PLUGIN_HISTORY_SEARCH=""
+PLUGIN_ZSH_ABBR=""
+PLUGIN_SYNTAX_HIGHLIGHTING=""
 
 FLAG_CHSH=0
 FLAG_NO_CHSH=0
 FLAG_FORCE=0
 FLAG_DRY_RUN=0
-FLAG_SKIP_PKGS=0
+FLAG_INSTALL_DEPS=0
 FLAG_NON_INTERACTIVE=0
 
 HOME="${HOME:-$(cd ~ && pwd)}"
@@ -60,11 +68,13 @@ XDG_DATA_HOME="${XDG_DATA_HOME:-$HOME/.local/share}"
 XDG_CACHE_HOME="${XDG_CACHE_HOME:-$HOME/.cache}"
 
 FISHLIKE_CONFIG_DIR="${FISHLIKE_CONFIG_DIR:-$XDG_CONFIG_HOME/fishlike-zsh}"
+FISHLIKE_ENV="${FISHLIKE_CONFIG_DIR}/env.zsh"
 FISHLIKE_CONFIG="${FISHLIKE_CONFIG_DIR}/config.zsh"
 ZSH_PLUGINS_TXT="${FISHLIKE_CONFIG_DIR}/plugins.txt"
 ZSH_PLUGINS_ZSH="${FISHLIKE_CONFIG_DIR}/plugins.zsh"
 ZSHRC="${ZDOTDIR}/.zshrc"
 LOCAL_RC="${ZDOTDIR}/.zshrc.local"
+SHARE_DIR=""
 
 # Use isolated locations so this installer cannot mutate another Antidote setup.
 ANTIDOTE_DIR="${FISHLIKE_ANTIDOTE_DIR:-${ANTIDOTE_DIR:-$XDG_DATA_HOME/fishlike-zsh/antidote}}"
@@ -224,13 +234,13 @@ Options:
   --no-chsh         Answer no to the login-shell question
   --force           Approve replacement of conflicting managed paths
   --dry-run         Show actions without downloading or changing files
-  --skip-pkgs       Answer no to system package installation
+  --install-deps    Install missing system packages via the package manager
   --non-interactive  Never ask questions; use the shown defaults
   -h, --help        Show this help
 
 Dependencies:
   zsh ${MIN_ZSH_VERSION} or newer and a working git executable
-  curl or wget, tar, and a SHA-256 tool when fzf must be installed
+  curl or wget, tar, and a SHA-256 tool when fzf or share payload must be fetched
 
 Environment overrides:
   ZDOTDIR                 Directory containing .zshrc
@@ -238,6 +248,8 @@ Environment overrides:
   FISHLIKE_ANTIDOTE_DIR   Pinned Antidote checkout
   FISHLIKE_ANTIDOTE_HOME  Isolated Antidote plugin cache
   FISHLIKE_BIN_DIR        Isolated directory for the pinned fzf binary
+  FISHLIKE_SHARE_DIR      Local share/ directory (config.zsh + plugins.txt)
+  ZISH_SHARE_REF          Git ref for remote share/ fetch (default: main)
 EOF
   exit 0
 }
@@ -249,7 +261,7 @@ parse_args() {
       --no-chsh) FLAG_NO_CHSH=1 ;;
       --force) FLAG_FORCE=1 ;;
       --dry-run) FLAG_DRY_RUN=1 ;;
-      --skip-pkgs) FLAG_SKIP_PKGS=1 ;;
+      --install-deps) FLAG_INSTALL_DEPS=1 ;;
       --non-interactive) FLAG_NON_INTERACTIVE=1 ;;
       -h|--help) usage ;;
       *) die "unknown flag: $1 (try --help)" ;;
@@ -318,12 +330,44 @@ as_root() {
   fi
 }
 
-install_system_packages() {
-  if (( FLAG_SKIP_PKGS )); then
-    warn "skipping system package manager (--skip-pkgs)"
-    return 0
+suggest_system_packages() {
+  local need_zsh="$1" need_git="$2" need_downloader="$3"
+  printf 'Missing system dependencies:\n' >&2
+  (( need_zsh )) && printf '  - zsh %s or newer\n' "$MIN_ZSH_VERSION" >&2
+  (( need_git )) && printf '  - git\n' >&2
+  (( need_downloader )) && printf '  - curl or wget\n' >&2
+  printf '\nInstall them with your package manager, then re-run. Examples:\n' >&2
+  if have brew; then
+    local brew_pkgs=()
+    (( need_zsh )) && brew_pkgs+=(zsh)
+    (( need_git )) && brew_pkgs+=(git)
+    (( need_downloader )) && brew_pkgs+=(curl)
+    printf '  brew install %s\n' "${brew_pkgs[*]}" >&2
+  elif have apt-get; then
+    local apt_pkgs=()
+    (( need_zsh )) && apt_pkgs+=(zsh)
+    (( need_git )) && apt_pkgs+=(git)
+    (( need_downloader )) && apt_pkgs+=(curl ca-certificates)
+    printf '  sudo apt-get update && sudo apt-get install -y %s\n' "${apt_pkgs[*]}" >&2
+  elif have dnf; then
+    local dnf_pkgs=()
+    (( need_zsh )) && dnf_pkgs+=(zsh)
+    (( need_git )) && dnf_pkgs+=(git)
+    (( need_downloader )) && dnf_pkgs+=(curl ca-certificates)
+    printf '  sudo dnf install -y %s\n' "${dnf_pkgs[*]}" >&2
+  elif have pacman; then
+    local pacman_pkgs=()
+    (( need_zsh )) && pacman_pkgs+=(zsh)
+    (( need_git )) && pacman_pkgs+=(git)
+    (( need_downloader )) && pacman_pkgs+=(curl ca-certificates)
+    printf '  sudo pacman -S --needed %s\n' "${pacman_pkgs[*]}" >&2
+  else
+    printf '  (install zsh, git, and curl/wget with your OS package manager)\n' >&2
   fi
+  printf '\nOr re-run with --install-deps to let the installer invoke the package manager.\n' >&2
+}
 
+install_system_packages() {
   local need_zsh=0 need_git=0 need_downloader=0
   zsh_meets_minimum || need_zsh=1
   git_is_usable || need_git=1
@@ -336,13 +380,12 @@ install_system_packages() {
     return 0
   fi
 
-  if ! ask_yes_no "Install the missing system dependencies now?" yes; then
-    FLAG_SKIP_PKGS=1
-    warn "system package installation declined"
+  if (( ! FLAG_INSTALL_DEPS )); then
+    suggest_system_packages "$need_zsh" "$need_git" "$need_downloader"
     return 0
   fi
 
-  log "installing required system packages"
+  log "installing required system packages (--install-deps)"
 
   if have brew; then
     local brew_pkgs=()
@@ -744,6 +787,13 @@ prepare_plugin_cache() {
     warn "plugin cache inspection deferred until git is installed"
     return 0
   fi
+  if [[ -z "$PLUGIN_ZSH_COMPLETIONS" ]]; then
+    if (( FLAG_DRY_RUN )); then
+      warn "plugin cache inspection deferred until share payload is available"
+      return 0
+    fi
+    die "plugin pins were not loaded from share/plugins.txt"
+  fi
   prepare_plugin_repo zsh-users/zsh-completions "$PLUGIN_ZSH_COMPLETIONS"
   prepare_plugin_repo mattmc3/ez-compinit "$PLUGIN_EZ_COMPINIT"
   prepare_plugin_repo Aloxaf/fzf-tab "$PLUGIN_FZF_TAB"
@@ -753,13 +803,9 @@ prepare_plugin_cache() {
   prepare_plugin_repo zsh-users/zsh-syntax-highlighting "$PLUGIN_SYNTAX_HIGHLIGHTING"
 }
 
-file_mode() {
-  local file="$1"
-  stat -f '%Lp' "$file" 2>/dev/null || stat -c '%a' "$file" 2>/dev/null || true
-}
-
+# Managed text files always use 0600. No platform-specific stat(1) dialects.
 atomic_write_content() {
-  local dest="$1" content="$2" parent tmp mode
+  local dest="$1" content="$2" parent tmp
   parent="$(dirname "$dest")"
   mkdir -p "$parent"
   tmp="$(mktemp "$parent/.fishlike-write.XXXXXX")"
@@ -769,14 +815,7 @@ atomic_write_content() {
     rm -f -- "$tmp"
     die "failed to write temporary file for $dest"
   fi
-
-  mode=""
-  [[ -f "$dest" ]] && mode="$(file_mode "$dest")"
-  if [[ -n "$mode" ]]; then
-    chmod "$mode" "$tmp"
-  else
-    chmod 0600 "$tmp"
-  fi
+  chmod 0600 "$tmp"
 
   if ! mv -f "$tmp" "$dest"; then
     rm -f -- "$tmp"
@@ -892,6 +931,7 @@ preflight_antidote() {
 
 preflight() {
   preflight_zshrc
+  preflight_managed_artifact "$FISHLIKE_ENV"
   preflight_managed_artifact "$FISHLIKE_CONFIG"
   preflight_managed_artifact "$ZSH_PLUGINS_TXT"
   preflight_fzf
@@ -926,26 +966,155 @@ prepare_plugin_bundle() {
   fi
 }
 
-write_zsh_plugins_txt() {
-  log "writing pinned plugin manifest"
-  write_managed_file_from_stdin "$ZSH_PLUGINS_TXT" <<EOF
-$MANAGED_MARKER
-# Repository revisions are immutable by design.
+write_managed_file_from_path() {
+  local dest="$1" srcfile="$2" content
+  [[ -r "$srcfile" ]] || die "missing share payload file: $srcfile"
+  content="$(cat "$srcfile"; printf '\034')"
+  content="${content%$'\034'}"
+  if [[ "$content" != "$MANAGED_MARKER"$'\n'* && "$content" != "$MANAGED_MARKER" ]]; then
+    content="$MANAGED_MARKER"$'\n'"$content"
+  fi
 
-zsh-users/zsh-completions kind:fpath path:src pin:$PLUGIN_ZSH_COMPLETIONS
-mattmc3/ez-compinit pin:$PLUGIN_EZ_COMPINIT
-Aloxaf/fzf-tab pin:$PLUGIN_FZF_TAB
+  if content_equals_file "$dest" "$content"; then
+    ok "unchanged $dest"
+    return 0
+  fi
 
-zsh-users/zsh-autosuggestions pin:$PLUGIN_AUTOSUGGESTIONS
-zsh-users/zsh-history-substring-search pin:$PLUGIN_HISTORY_SEARCH
-olets/zsh-abbr pin:$PLUGIN_ZSH_ABBR
+  if [[ -L "$dest" ]]; then
+    die "refusing to replace symlink: $dest"
+  fi
+  if [[ -e "$dest" && ! -f "$dest" ]]; then
+    die "refusing to replace non-file path: $dest"
+  fi
+  if [[ -f "$dest" ]]; then
+    if ! is_managed_artifact "$dest"; then
+      require_replacement_approval "$dest"
+    fi
+    backup_file "$dest"
+  fi
 
-# Syntax highlighting must be loaded last.
-zsh-users/zsh-syntax-highlighting pin:$PLUGIN_SYNTAX_HIGHLIGHTING
-EOF
+  if (( FLAG_DRY_RUN )); then
+    log "would write managed file $dest"
+    return 0
+  fi
+
+  atomic_write_content "$dest" "$content"
+  ok "wrote $dest"
 }
 
-render_fishlike_config() {
+pin_for_repo() {
+  local repo="$1" file="$2" line pin
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    case "$line" in
+      '#'*|'') continue ;;
+      "$repo "*)
+        pin="${line##*pin:}"
+        pin="${pin%%[[:space:]]*}"
+        if [[ "$pin" =~ ^[0-9a-f]{40}$ ]]; then
+          printf '%s\n' "$pin"
+          return 0
+        fi
+        ;;
+    esac
+  done <"$file"
+  return 1
+}
+
+load_plugin_pins_from() {
+  local file="$1"
+  PLUGIN_ZSH_COMPLETIONS="$(pin_for_repo zsh-users/zsh-completions "$file")" \
+    || die "pin missing in $file: zsh-users/zsh-completions"
+  PLUGIN_EZ_COMPINIT="$(pin_for_repo mattmc3/ez-compinit "$file")" \
+    || die "pin missing in $file: mattmc3/ez-compinit"
+  PLUGIN_FZF_TAB="$(pin_for_repo Aloxaf/fzf-tab "$file")" \
+    || die "pin missing in $file: Aloxaf/fzf-tab"
+  PLUGIN_AUTOSUGGESTIONS="$(pin_for_repo zsh-users/zsh-autosuggestions "$file")" \
+    || die "pin missing in $file: zsh-users/zsh-autosuggestions"
+  PLUGIN_HISTORY_SEARCH="$(pin_for_repo zsh-users/zsh-history-substring-search "$file")" \
+    || die "pin missing in $file: zsh-users/zsh-history-substring-search"
+  PLUGIN_ZSH_ABBR="$(pin_for_repo olets/zsh-abbr "$file")" \
+    || die "pin missing in $file: olets/zsh-abbr"
+  PLUGIN_SYNTAX_HIGHLIGHTING="$(pin_for_repo zsh-users/zsh-syntax-highlighting "$file")" \
+    || die "pin missing in $file: zsh-users/zsh-syntax-highlighting"
+}
+
+resolve_share_dir_local() {
+  local src dir
+  if [[ -n "${FISHLIKE_SHARE_DIR:-}" ]]; then
+    [[ -f "$FISHLIKE_SHARE_DIR/config.zsh" && -f "$FISHLIKE_SHARE_DIR/plugins.txt" ]] \
+      || die "FISHLIKE_SHARE_DIR incomplete: $FISHLIKE_SHARE_DIR"
+    printf '%s\n' "$FISHLIKE_SHARE_DIR"
+    return 0
+  fi
+
+  src="${BASH_SOURCE[0]:-}"
+  if [[ -n "$src" && -f "$src" ]]; then
+    dir="$(cd "$(dirname "$src")" && pwd)/share"
+    if [[ -f "$dir/config.zsh" && -f "$dir/plugins.txt" ]]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+  fi
+  return 1
+}
+
+verify_share_file() {
+  local file="$1" expected="$2" actual
+  actual="$(sha256_file "$file")" || die "could not hash $file"
+  [[ "$actual" == "$expected" ]] || die "share payload checksum mismatch for $(basename "$file")"
+}
+
+download_share_payload() {
+  local tmp config_url plugins_url
+  if ! have sha256sum && ! have shasum && ! have openssl; then
+    die "sha256sum, shasum, or openssl is required to verify share payload"
+  fi
+  downloader_is_available || die "curl or wget is required to fetch share payload"
+
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/fishlike-share.XXXXXX")"
+  register_temp "$tmp"
+  config_url="${ZISH_SHARE_BASE}/config.zsh"
+  plugins_url="${ZISH_SHARE_BASE}/plugins.txt"
+
+  log "fetching share payload from $ZISH_SHARE_BASE"
+  if (( FLAG_DRY_RUN )); then
+    printf '  config=%s\n  plugins=%s\n' "$config_url" "$plugins_url"
+    printf '  config_sha256=%s\n  plugins_sha256=%s\n' \
+      "$SHARE_CONFIG_SHA256" "$SHARE_PLUGINS_SHA256"
+    SHARE_DIR="$tmp"
+    : >"$tmp/config.zsh"
+    : >"$tmp/plugins.txt"
+    return 0
+  fi
+
+  download "$config_url" "$tmp/config.zsh"
+  download "$plugins_url" "$tmp/plugins.txt"
+  verify_share_file "$tmp/config.zsh" "$SHARE_CONFIG_SHA256"
+  verify_share_file "$tmp/plugins.txt" "$SHARE_PLUGINS_SHA256"
+  SHARE_DIR="$tmp"
+  ok "share payload verified"
+}
+
+resolve_share_payload() {
+  local local_dir
+  if local_dir="$(resolve_share_dir_local)"; then
+    SHARE_DIR="$local_dir"
+    if ! (( FLAG_DRY_RUN )) && { have sha256sum || have shasum || have openssl; }; then
+      verify_share_file "$SHARE_DIR/config.zsh" "$SHARE_CONFIG_SHA256"
+      verify_share_file "$SHARE_DIR/plugins.txt" "$SHARE_PLUGINS_SHA256"
+    fi
+    ok "using local share payload: $SHARE_DIR"
+  else
+    download_share_payload
+  fi
+
+  if (( FLAG_DRY_RUN )) && [[ ! -s "${SHARE_DIR:-}/plugins.txt" ]]; then
+    return 0
+  fi
+  load_plugin_pins_from "$SHARE_DIR/plugins.txt"
+}
+
+render_env_zsh() {
   local antidote_q cache_q plugins_txt_q plugins_zsh_q local_bin_q local_rc_q
   printf -v antidote_q '%q' "$ANTIDOTE_DIR"
   printf -v cache_q '%q' "$ANTIDOTE_CACHE_DIR"
@@ -955,472 +1124,69 @@ render_fishlike_config() {
   printf -v local_rc_q '%q' "$LOCAL_RC"
 
   printf '%s\n' "$MANAGED_MARKER"
-  printf '# fishlike-zsh config v%s\n' "$INSTALLER_VERSION"
+  printf '# fishlike-zsh env v%s — machine paths only.\n' "$INSTALLER_VERSION"
   printf 'typeset -g FISHLIKE_ANTIDOTE_DIR=%s\n' "$antidote_q"
   printf 'typeset -g FISHLIKE_ANTIDOTE_HOME=%s\n' "$cache_q"
   printf 'typeset -g FISHLIKE_PLUGIN_FILE=%s\n' "$plugins_txt_q"
   printf 'typeset -g FISHLIKE_PLUGIN_BUNDLE=%s\n' "$plugins_zsh_q"
   printf 'typeset -g FISHLIKE_LOCAL_BIN=%s\n' "$local_bin_q"
   printf 'typeset -g FISHLIKE_LOCAL_RC=%s\n' "$local_rc_q"
-  cat <<'EOF'
+}
 
-# ---- history and shell behavior --------------------------------------------
-export HISTFILE="${HISTFILE:-${ZDOTDIR:-$HOME}/.zsh_history}"
-export HISTSIZE="${HISTSIZE:-100000}"
-export SAVEHIST="${SAVEHIST:-100000}"
+write_env_zsh() {
+  local content
+  content="$(render_env_zsh; printf '\034')"
+  content="${content%$'\034'}"
 
-setopt HIST_IGNORE_ALL_DUPS
-setopt HIST_REDUCE_BLANKS
-setopt SHARE_HISTORY
-setopt EXTENDED_HISTORY
-setopt AUTO_CD
-setopt AUTO_PUSHD
-setopt PUSHD_IGNORE_DUPS
-setopt INTERACTIVE_COMMENTS
-setopt NO_BEEP
-setopt PROMPT_SUBST
-
-autoload -Uz colors add-zsh-hook vcs_info
-colors
-
-# ---- prompt ----------------------------------------------------------------
-zstyle ':vcs_info:*' enable git
-zstyle ':vcs_info:*' check-for-changes false
-zstyle ':vcs_info:git:*' formats ' %F{magenta}(%b)%f'
-zstyle ':vcs_info:git:*' actionformats ' %F{magenta}(%b|%a)%f'
-
-prompt_pwd_fish_style() {
-  local path="${PWD/#$HOME/~}"
-  local prefix='' part
-  local -i i
-  local -a parts short_parts
-
-  if [[ "$path" == / ]]; then
-    print -r -- /
-    return
-  fi
-  if [[ "$path" == /* ]]; then
-    prefix='/'
-    path="${path#/}"
+  if content_equals_file "$FISHLIKE_ENV" "$content"; then
+    ok "unchanged $FISHLIKE_ENV"
+    return 0
   fi
 
-  parts=("${(@s:/:)path}")
-  for (( i = 1; i <= ${#parts}; i++ )); do
-    part="${parts[$i]}"
-    [[ -z "$part" ]] && continue
-    if (( i == ${#parts} )) || [[ "$part" == '~' ]]; then
-      short_parts+=("$part")
-    elif [[ "$part" == .* ]]; then
-      short_parts+=("${part[1,2]}")
-    else
-      short_parts+=("${part[1,1]}")
+  if [[ -L "$FISHLIKE_ENV" ]]; then
+    die "refusing to replace symlink: $FISHLIKE_ENV"
+  fi
+  if [[ -e "$FISHLIKE_ENV" && ! -f "$FISHLIKE_ENV" ]]; then
+    die "refusing to replace non-file path: $FISHLIKE_ENV"
+  fi
+  if [[ -f "$FISHLIKE_ENV" ]]; then
+    if ! is_managed_artifact "$FISHLIKE_ENV"; then
+      require_replacement_approval "$FISHLIKE_ENV"
     fi
-  done
-  print -r -- "${prefix}${(j:/:)short_parts}"
-}
-
-prompt_fish_style() {
-  local last_status=$?
-  vcs_info
-  prompt_pwd_short="$(prompt_pwd_fish_style)"
-  if (( last_status )); then
-    prompt_status=" %B%F{red}[$last_status]%f%b"
-  else
-    prompt_status=''
-  fi
-}
-
-case " ${precmd_functions[*]} " in
-  *' prompt_fish_style '*) ;;
-  *) precmd_functions+=(prompt_fish_style) ;;
-esac
-PROMPT='%B%F{green}%n%b%f@%m %F{green}${prompt_pwd_short}%f${vcs_info_msg_0_}${prompt_status}%(!.#.>) '
-
-# ---- terminal title --------------------------------------------------------
-_fishlike_title_precmd() {
-  [[ -t 1 && "${TERM:-}" != dumb ]] && print -Pn -- '\e]0;%n@%m: %~\a'
-  return 0
-}
-_fishlike_title_preexec() {
-  [[ -t 1 && "${TERM:-}" != dumb ]] && print -Pn -- "\e]0;${1%% *}\a"
-  return 0
-}
-add-zsh-hook -d precmd _fishlike_title_precmd 2>/dev/null || true
-add-zsh-hook -d preexec _fishlike_title_preexec 2>/dev/null || true
-add-zsh-hook precmd _fishlike_title_precmd
-add-zsh-hook preexec _fishlike_title_preexec
-
-# ---- path and portable colors ----------------------------------------------
-path_prepend() {
-  [[ -d "$1" ]] || return 0
-  case ":$PATH:" in
-    *":$1:"*) ;;
-    *) export PATH="$1:$PATH" ;;
-  esac
-}
-path_prepend "$FISHLIKE_LOCAL_BIN"
-
-if command -v dircolors >/dev/null 2>&1; then
-  if [[ -r "$HOME/.dircolors" ]]; then
-    eval "$(dircolors -b "$HOME/.dircolors")"
-  else
-    eval "$(dircolors -b)"
-  fi
-fi
-if [[ -z "${LS_COLORS:-}" ]]; then
-  export LS_COLORS='rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:ex=01;32:tw=30;42:ow=34;42:'
-fi
-export CLICOLOR="${CLICOLOR:-1}"
-export LSCOLORS="${LSCOLORS:-exfxcxdxbxegedabagacad}"
-
-typeset -g _FISHLIKE_LS_COLOR_FLAG=
-if command ls --color=auto / >/dev/null 2>&1; then
-  _FISHLIKE_LS_COLOR_FLAG=gnu
-elif command ls -G / >/dev/null 2>&1; then
-  _FISHLIKE_LS_COLOR_FLAG=bsd
-fi
-
-# ---- completion and plugin configuration -----------------------------------
-zstyle ':completion:*' menu no
-zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}'
-zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
-zstyle ':completion:*' group-name ''
-zstyle ':fzf-tab:*' fzf-command fzf
-zstyle ':fzf-tab:*' switch-group '<' '>'
-if [[ "$_FISHLIKE_LS_COLOR_FLAG" == gnu ]]; then
-  zstyle ':fzf-tab:complete:cd:*' fzf-preview 'ls -la --color=always -- $realpath 2>/dev/null | head -200'
-else
-  zstyle ':fzf-tab:complete:cd:*' fzf-preview 'CLICOLOR_FORCE=1 ls -laG -- $realpath 2>/dev/null | head -200'
-fi
-
-ZSH_AUTOSUGGEST_STRATEGY=(history completion)
-ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=8'
-HISTORY_SUBSTRING_SEARCH_ENSURE_UNIQUE=1
-HISTORY_SUBSTRING_SEARCH_HIGHLIGHT_FOUND='fg=green,bold'
-HISTORY_SUBSTRING_SEARCH_HIGHLIGHT_NOT_FOUND='fg=red,bold'
-
-typeset -g ANTIDOTE_HOME="$FISHLIKE_ANTIDOTE_HOME"
-zstyle ':antidote:bundle' path-style full
-zstyle -d ':antidote:bundle' use-friendly-names 2>/dev/null || true
-zstyle ':antidote:git' site github.com
-zstyle ':antidote:git' protocol https
-zstyle ':antidote:git' cmd git
-
-_fishlike_bundle_is_managed() {
-  local first=''
-  [[ -r "$FISHLIKE_PLUGIN_BUNDLE" ]] || return 1
-  IFS= read -r first <"$FISHLIKE_PLUGIN_BUNDLE" || true
-  [[ "$first" == '# Generated by install-fishlike-zsh.sh; do not edit.' ]]
-}
-
-_fishlike_plugin_files_present() {
-  local root="$FISHLIKE_ANTIDOTE_HOME/github.com"
-  [[
-    ! -L "$root/zsh-users/zsh-completions" &&
-    -d "$root/zsh-users/zsh-completions/.git" &&
-    -d "$root/zsh-users/zsh-completions/src" &&
-    ! -L "$root/mattmc3/ez-compinit" &&
-    -d "$root/mattmc3/ez-compinit/.git" &&
-    -r "$root/mattmc3/ez-compinit/ez-compinit.plugin.zsh" &&
-    ! -L "$root/Aloxaf/fzf-tab" &&
-    -d "$root/Aloxaf/fzf-tab/.git" &&
-    -r "$root/Aloxaf/fzf-tab/fzf-tab.plugin.zsh" &&
-    ! -L "$root/zsh-users/zsh-autosuggestions" &&
-    -d "$root/zsh-users/zsh-autosuggestions/.git" &&
-    -r "$root/zsh-users/zsh-autosuggestions/zsh-autosuggestions.plugin.zsh" &&
-    ! -L "$root/zsh-users/zsh-history-substring-search" &&
-    -d "$root/zsh-users/zsh-history-substring-search/.git" &&
-    -r "$root/zsh-users/zsh-history-substring-search/zsh-history-substring-search.plugin.zsh" &&
-    ! -L "$root/olets/zsh-abbr" &&
-    -d "$root/olets/zsh-abbr/.git" &&
-    -r "$root/olets/zsh-abbr/zsh-abbr.plugin.zsh" &&
-    ! -L "$root/zsh-users/zsh-syntax-highlighting" &&
-    -d "$root/zsh-users/zsh-syntax-highlighting/.git" &&
-    -r "$root/zsh-users/zsh-syntax-highlighting/zsh-syntax-highlighting.plugin.zsh"
-  ]]
-}
-
-_fishlike_quarantine_incomplete_repo() {
-  local repo="$1" required="$2" kind="$3" backup
-  [[ -e "$repo" || -L "$repo" ]] || return 0
-  if [[ ! -L "$repo" && -d "$repo/.git" ]]; then
-    case "$kind" in
-      dir) [[ -d "$required" ]] && return 0 ;;
-      file) [[ -r "$required" ]] && return 0 ;;
-    esac
+    backup_file "$FISHLIKE_ENV"
   fi
 
-  backup="${repo}.incomplete"
-  while [[ -e "$backup" || -L "$backup" ]]; do
-    backup+='.bak'
-  done
-  print -u2 -- "fishlike-zsh: preserving incomplete plugin cache at $backup"
-  command mv "$repo" "$backup"
+  if (( FLAG_DRY_RUN )); then
+    log "would write managed file $FISHLIKE_ENV"
+    return 0
+  fi
+
+  atomic_write_content "$FISHLIKE_ENV" "$content"
+  ok "wrote $FISHLIKE_ENV"
 }
 
-_fishlike_quarantine_incomplete_plugins() {
-  local root="$FISHLIKE_ANTIDOTE_HOME/github.com"
-  _fishlike_quarantine_incomplete_repo \
-    "$root/zsh-users/zsh-completions" "$root/zsh-users/zsh-completions/src" dir || return 1
-  _fishlike_quarantine_incomplete_repo \
-    "$root/mattmc3/ez-compinit" "$root/mattmc3/ez-compinit/ez-compinit.plugin.zsh" file || return 1
-  _fishlike_quarantine_incomplete_repo \
-    "$root/Aloxaf/fzf-tab" "$root/Aloxaf/fzf-tab/fzf-tab.plugin.zsh" file || return 1
-  _fishlike_quarantine_incomplete_repo \
-    "$root/zsh-users/zsh-autosuggestions" "$root/zsh-users/zsh-autosuggestions/zsh-autosuggestions.plugin.zsh" file || return 1
-  _fishlike_quarantine_incomplete_repo \
-    "$root/zsh-users/zsh-history-substring-search" "$root/zsh-users/zsh-history-substring-search/zsh-history-substring-search.plugin.zsh" file || return 1
-  _fishlike_quarantine_incomplete_repo \
-    "$root/olets/zsh-abbr" "$root/olets/zsh-abbr/zsh-abbr.plugin.zsh" file || return 1
-  _fishlike_quarantine_incomplete_repo \
-    "$root/zsh-users/zsh-syntax-highlighting" "$root/zsh-users/zsh-syntax-highlighting/zsh-syntax-highlighting.plugin.zsh" file || return 1
-}
-
-_fishlike_build_plugin_bundle() {
-  local tmp
-  tmp="$(mktemp "${FISHLIKE_PLUGIN_BUNDLE}.tmp.XXXXXX")" || return 1
-  if {
-    print -r -- '# Generated by install-fishlike-zsh.sh; do not edit.'
-    antidote bundle <"$FISHLIKE_PLUGIN_FILE"
-  } >|"$tmp"; then
-    chmod 0600 "$tmp"
-    mv -f "$tmp" "$FISHLIKE_PLUGIN_BUNDLE"
-  else
-    rm -f "$tmp"
-    return 1
+install_managed_share() {
+  log "installing managed configuration from share payload"
+  [[ -n "$SHARE_DIR" ]] || die "share payload was not resolved"
+  if (( FLAG_DRY_RUN )) && [[ ! -s "$SHARE_DIR/plugins.txt" ]]; then
+    log "would write managed file $ZSH_PLUGINS_TXT"
+    log "would write managed file $FISHLIKE_CONFIG"
+    write_env_zsh
+    return 0
   fi
-}
-
-typeset -gi _fishlike_plugins_ready=0
-if [[ -r "$FISHLIKE_ANTIDOTE_DIR/antidote.zsh" && -r "$FISHLIKE_PLUGIN_FILE" ]]; then
-  source "$FISHLIKE_ANTIDOTE_DIR/antidote.zsh"
-  if ! _fishlike_plugin_files_present; then
-    _fishlike_quarantine_incomplete_plugins || \
-      print -u2 'fishlike-zsh: failed to preserve an incomplete plugin cache'
-  fi
-  if ! _fishlike_bundle_is_managed ||
-      ! _fishlike_plugin_files_present ||
-      [[ ! "$FISHLIKE_PLUGIN_BUNDLE" -nt "$FISHLIKE_PLUGIN_FILE" ]]; then
-    _fishlike_build_plugin_bundle || print -u2 'fishlike-zsh: failed to build plugin bundle'
-  fi
-  if _fishlike_bundle_is_managed && _fishlike_plugin_files_present; then
-    if source "$FISHLIKE_PLUGIN_BUNDLE"; then
-      _fishlike_plugins_ready=1
-    else
-      print -u2 'fishlike-zsh: failed to load plugin bundle'
-    fi
-  elif ! _fishlike_plugin_files_present; then
-    print -u2 'fishlike-zsh: plugin cache is incomplete; plugins were not loaded'
-  fi
-fi
-if (( ! _fishlike_plugins_ready )); then
-  autoload -Uz compinit && compinit -C
-fi
-unset -f _fishlike_bundle_is_managed _fishlike_plugin_files_present \
-  _fishlike_quarantine_incomplete_repo _fishlike_quarantine_incomplete_plugins \
-  _fishlike_build_plugin_bundle
-
-# ---- directory history -----------------------------------------------------
-typeset -ga _FISHLIKE_DIRHIST
-typeset -gi _FISHLIKE_DIRHIST_POS=0
-typeset -gi _FISHLIKE_DIRHIST_NAV=0
-typeset -gi _FISHLIKE_DIRHIST_MAX=50
-
-_fishlike_dirhist_add() {
-  (( _FISHLIKE_DIRHIST_NAV )) && return 0
-  if (( _FISHLIKE_DIRHIST_POS > 0 && _FISHLIKE_DIRHIST_POS < $#_FISHLIKE_DIRHIST )); then
-    _FISHLIKE_DIRHIST=("${_FISHLIKE_DIRHIST[@]:0:$_FISHLIKE_DIRHIST_POS}")
-  fi
-  if (( $#_FISHLIKE_DIRHIST == 0 )) || [[ "$_FISHLIKE_DIRHIST[-1]" != "$PWD" ]]; then
-    _FISHLIKE_DIRHIST+=("$PWD")
-    if (( $#_FISHLIKE_DIRHIST > _FISHLIKE_DIRHIST_MAX )); then
-      _FISHLIKE_DIRHIST=("${_FISHLIKE_DIRHIST[@]: -$_FISHLIKE_DIRHIST_MAX}")
-    fi
-  fi
-  _FISHLIKE_DIRHIST_POS=$#_FISHLIKE_DIRHIST
-}
-
-prevd() {
-  if (( _FISHLIKE_DIRHIST_POS <= 1 )); then
-    print -u2 'prevd: beginning of directory history'
-    return 1
-  fi
-  _FISHLIKE_DIRHIST_NAV=1
-  local old_pos=$_FISHLIKE_DIRHIST_POS
-  _FISHLIKE_DIRHIST_POS=$((_FISHLIKE_DIRHIST_POS - 1))
-  if ! cd -- "$_FISHLIKE_DIRHIST[$_FISHLIKE_DIRHIST_POS]"; then
-    _FISHLIKE_DIRHIST_POS=$old_pos
-    _FISHLIKE_DIRHIST_NAV=0
-    return 1
-  fi
-  _FISHLIKE_DIRHIST_NAV=0
-}
-
-nextd() {
-  if (( _FISHLIKE_DIRHIST_POS >= $#_FISHLIKE_DIRHIST )); then
-    print -u2 'nextd: end of directory history'
-    return 1
-  fi
-  _FISHLIKE_DIRHIST_NAV=1
-  local old_pos=$_FISHLIKE_DIRHIST_POS
-  _FISHLIKE_DIRHIST_POS=$((_FISHLIKE_DIRHIST_POS + 1))
-  if ! cd -- "$_FISHLIKE_DIRHIST[$_FISHLIKE_DIRHIST_POS]"; then
-    _FISHLIKE_DIRHIST_POS=$old_pos
-    _FISHLIKE_DIRHIST_NAV=0
-    return 1
-  fi
-  _FISHLIKE_DIRHIST_NAV=0
-}
-
-cdh() {
-  if (( $#_FISHLIKE_DIRHIST == 0 )); then
-    print -u2 'cdh: no directory history'
-    return 1
-  fi
-  local dest
-  if command -v fzf >/dev/null 2>&1; then
-    dest="$(
-      printf '%s\n' "${_FISHLIKE_DIRHIST[@]}" |
-        awk '{printf "%3d  %s\n", NR, $0}' |
-        fzf --height=40% --reverse --tac --prompt='cdh> ' |
-        sed -E 's/^[[:space:]]*[0-9]+[[:space:]]+//'
-    )"
-  else
-    local i=1 d n
-    for d in "${_FISHLIKE_DIRHIST[@]}"; do
-      print -r -- "$i  $d"
-      (( i++ ))
-    done
-    print -n 'cdh number: '
-    read -r n
-    [[ "$n" == <-> && n -ge 1 && n -le $#_FISHLIKE_DIRHIST ]] || return 1
-    dest="$_FISHLIKE_DIRHIST[n]"
-  fi
-  [[ -n "$dest" ]] || return 1
-  cd -- "$dest"
-}
-
-add-zsh-hook -d chpwd _fishlike_dirhist_add 2>/dev/null || true
-add-zsh-hook chpwd _fishlike_dirhist_add
-_FISHLIKE_DIRHIST=("$PWD")
-_FISHLIKE_DIRHIST_POS=1
-
-# ---- interactive widgets and key bindings ---------------------------------
-fishlike-prevd-or-backward-word() {
-  if [[ -z "$BUFFER" && -z "$PREBUFFER" ]]; then
-    prevd 2>/dev/null || true
-    zle reset-prompt
-  else
-    zle backward-word
-  fi
-}
-fishlike-nextd-or-forward-word() {
-  if [[ -z "$BUFFER" && -z "$PREBUFFER" ]]; then
-    nextd 2>/dev/null || true
-    zle reset-prompt
-  else
-    zle forward-word
-  fi
-}
-zle -N fishlike-prevd-or-backward-word
-zle -N fishlike-nextd-or-forward-word
-
-if (( $+functions[_zsh_autosuggest_bind_widgets] )); then
-  _zsh_autosuggest_bind_widgets
-fi
-
-if (( $+commands[fzf] )); then
-  fishlike-fzf-history() {
-    local selected ret
-    selected="$(
-      fc -rln 1 2>/dev/null |
-        awk 'NF && !seen[$0]++' |
-        fzf --height=40% --reverse --tiebreak=index --query="${LBUFFER}" --prompt='hist> ' --scheme=history
-    )"
-    ret=$?
-    [[ -n "$selected" ]] && LBUFFER="$selected"
-    zle reset-prompt
-    return $ret
-  }
-  zle -N fishlike-fzf-history
-fi
-
-bindkey -e
-if (( ! $+commands[fzf] )); then
-  bindkey '^I' expand-or-complete
-fi
-if (( $+widgets[history-substring-search-up] && $+widgets[history-substring-search-down] )); then
-  bindkey '^[[A' history-substring-search-up
-  bindkey '^[[B' history-substring-search-down
-  bindkey '^[OA' history-substring-search-up
-  bindkey '^[OB' history-substring-search-down
-else
-  bindkey '^[[A' up-line-or-history
-  bindkey '^[[B' down-line-or-history
-  bindkey '^[OA' up-line-or-history
-  bindkey '^[OB' down-line-or-history
-fi
-bindkey '^[[C' forward-char
-bindkey '^[OC' forward-char
-if (( $+widgets[autosuggest-accept] )); then
-  bindkey '^[[F' autosuggest-accept
-  bindkey '^[OF' autosuggest-accept
-  bindkey '^[[4~' autosuggest-accept
-fi
-bindkey '^[b' fishlike-prevd-or-backward-word
-bindkey '^[f' fishlike-nextd-or-forward-word
-bindkey '^[[1;3D' fishlike-prevd-or-backward-word
-bindkey '^[[1;3C' fishlike-nextd-or-forward-word
-bindkey '^[[1;9D' fishlike-prevd-or-backward-word
-bindkey '^[[1;9C' fishlike-nextd-or-forward-word
-bindkey '^[[1;5C' forward-word
-bindkey '^[[1;5D' backward-word
-if (( $+widgets[fishlike-fzf-history] )); then
-  bindkey '^R' fishlike-fzf-history
-fi
-
-# ---- small, portable aliases ------------------------------------------------
-case "$_FISHLIKE_LS_COLOR_FLAG" in
-  gnu)
-    alias ls='ls --color=auto'
-    alias ll='ls -lah --color=auto'
-    alias la='ls -A --color=auto'
-    alias l='ls -CF --color=auto'
-    ;;
-  bsd)
-    alias ls='ls -G'
-    alias ll='ls -lahG'
-    alias la='ls -AG'
-    alias l='ls -CFG'
-    ;;
-  *)
-    alias ll='ls -lah'
-    alias la='ls -A'
-    alias l='ls -CF'
-    ;;
-esac
-
-unset -f path_prepend
-
-# Machine-local choices belong here, outside the managed configuration.
-if [[ -r "$FISHLIKE_LOCAL_RC" ]]; then
-  source "$FISHLIKE_LOCAL_RC"
-fi
-:
-EOF
-}
-
-write_fishlike_config() {
-  log "writing generic fishlike-zsh configuration"
-  render_fishlike_config | write_managed_file_from_stdin "$FISHLIKE_CONFIG"
+  write_managed_file_from_path "$ZSH_PLUGINS_TXT" "$SHARE_DIR/plugins.txt"
+  write_managed_file_from_path "$FISHLIKE_CONFIG" "$SHARE_DIR/config.zsh"
+  write_env_zsh
 }
 
 render_zshrc_loader() {
-  local config_q
+  local env_q config_q
+  printf -v env_q '%q' "$FISHLIKE_ENV"
   printf -v config_q '%q' "$FISHLIKE_CONFIG"
   printf '%s\n' "$LOADER_START"
-  printf 'if [[ -r %s ]]; then\n' "$config_q"
-  printf '  source %s\n' "$config_q"
+  printf 'if [[ -r %s ]]; then\n' "$env_q"
+  printf '  source %s\n' "$env_q"
+  printf '  [[ -r %s ]] && source %s\n' "$config_q" "$config_q"
   printf 'fi\n'
   printf '%s\n' "$LOADER_END"
 }
@@ -1600,6 +1366,7 @@ verify() {
 
   zsh_meets_minimum || die "zsh ${MIN_ZSH_VERSION} or newer is required"
   pinned_fzf_present || die "the managed fzf binary is missing or failed checksum verification"
+  [[ -r "$FISHLIKE_ENV" ]] || die "missing managed env: $FISHLIKE_ENV"
   [[ -r "$FISHLIKE_CONFIG" ]] || die "missing managed config: $FISHLIKE_CONFIG"
   [[ -r "$ZSH_PLUGINS_TXT" ]] || die "missing plugin manifest: $ZSH_PLUGINS_TXT"
   is_managed_bundle "$ZSH_PLUGINS_ZSH" || die "missing managed plugin bundle"
@@ -1670,11 +1437,11 @@ main() {
 
   install_system_packages
   require_runtime_dependencies
+  resolve_share_payload
   install_fzf_userland
   install_antidote
   prepare_plugin_cache
-  write_zsh_plugins_txt
-  write_fishlike_config
+  install_managed_share
   prepare_plugin_bundle
   update_zshrc_loader
   bootstrap_plugins

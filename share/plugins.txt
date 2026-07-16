@@ -1,0 +1,13 @@
+# Managed by install-fishlike-zsh.sh; edits may be replaced.
+# Repository revisions are immutable by design.
+
+zsh-users/zsh-completions kind:fpath path:src pin:9903bae60284072de3fa0e3e20965f22368c5694
+mattmc3/ez-compinit pin:5c9b6da88a463573e26e6846ff164026640ef2f6
+Aloxaf/fzf-tab pin:24105b15714bfec37989ed5c5b6e60f572253019
+
+zsh-users/zsh-autosuggestions pin:85919cd1ffa7d2d5412f6d3fe437ebdbeeec4fc5
+zsh-users/zsh-history-substring-search pin:14c8d2e0ffaee98f2df9850b19944f32546fdea5
+olets/zsh-abbr pin:889f4772c12b9dbe4965bbd56f2572af0a28fa3b
+
+# Syntax highlighting must be loaded last.
+zsh-users/zsh-syntax-highlighting pin:1d85c692615a25fe2293bdd44b34c217d5d2bf04
