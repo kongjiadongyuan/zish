@@ -362,21 +362,24 @@ typeset -gi _FISHLIKE_DIRHIST_NAV=0
 typeset -gi _FISHLIKE_DIRHIST_MAX=50
 
 _fishlike_dirhist_add() {
-  (( _FISHLIKE_DIRHIST_NAV )) && return 0
-  if (( _FISHLIKE_DIRHIST_POS > 0 && _FISHLIKE_DIRHIST_POS < $#_FISHLIKE_DIRHIST )); then
+  # Use ${#array} with braces inside ((...)). Bare $#_NAME is parsed as
+  # "$#" + "_NAME" or trips over arithmetic "#" in some option modes
+  # (e.g. after nvm rewrites the environment / triggers chpwd).
+  (( ${_FISHLIKE_DIRHIST_NAV:-0} )) && return 0
+  if (( ${_FISHLIKE_DIRHIST_POS:-0} > 0 && ${_FISHLIKE_DIRHIST_POS:-0} < ${#_FISHLIKE_DIRHIST} )); then
     _FISHLIKE_DIRHIST=("${_FISHLIKE_DIRHIST[@]:0:$_FISHLIKE_DIRHIST_POS}")
   fi
-  if (( $#_FISHLIKE_DIRHIST == 0 )) || [[ "$_FISHLIKE_DIRHIST[-1]" != "$PWD" ]]; then
+  if (( ${#_FISHLIKE_DIRHIST} == 0 )) || [[ "${_FISHLIKE_DIRHIST[-1]}" != "$PWD" ]]; then
     _FISHLIKE_DIRHIST+=("$PWD")
-    if (( $#_FISHLIKE_DIRHIST > _FISHLIKE_DIRHIST_MAX )); then
+    if (( ${#_FISHLIKE_DIRHIST} > ${_FISHLIKE_DIRHIST_MAX:-50} )); then
       _FISHLIKE_DIRHIST=("${_FISHLIKE_DIRHIST[@]: -$_FISHLIKE_DIRHIST_MAX}")
     fi
   fi
-  _FISHLIKE_DIRHIST_POS=$#_FISHLIKE_DIRHIST
+  _FISHLIKE_DIRHIST_POS=${#_FISHLIKE_DIRHIST}
 }
 
 prevd() {
-  if (( _FISHLIKE_DIRHIST_POS <= 1 )); then
+  if (( ${_FISHLIKE_DIRHIST_POS:-0} <= 1 )); then
     print -u2 'prevd: beginning of directory history'
     return 1
   fi
@@ -392,7 +395,7 @@ prevd() {
 }
 
 nextd() {
-  if (( _FISHLIKE_DIRHIST_POS >= $#_FISHLIKE_DIRHIST )); then
+  if (( ${_FISHLIKE_DIRHIST_POS:-0} >= ${#_FISHLIKE_DIRHIST} )); then
     print -u2 'nextd: end of directory history'
     return 1
   fi
@@ -408,7 +411,7 @@ nextd() {
 }
 
 cdh() {
-  if (( $#_FISHLIKE_DIRHIST == 0 )); then
+  if (( ${#_FISHLIKE_DIRHIST} == 0 )); then
     print -u2 'cdh: no directory history'
     return 1
   fi
@@ -428,7 +431,7 @@ cdh() {
     done
     print -n 'cdh number: '
     read -r n
-    [[ "$n" == <-> && n -ge 1 && n -le $#_FISHLIKE_DIRHIST ]] || return 1
+    [[ "$n" == <-> && n -ge 1 && n -le ${#_FISHLIKE_DIRHIST} ]] || return 1
     dest="$_FISHLIKE_DIRHIST[n]"
   fi
   [[ -n "$dest" ]] || return 1
