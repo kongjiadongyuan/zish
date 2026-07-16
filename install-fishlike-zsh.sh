@@ -29,7 +29,7 @@
 
 set -euo pipefail
 
-INSTALLER_VERSION="2.2.2"
+INSTALLER_VERSION="2.2.3"
 MIN_ZSH_VERSION="5.4.2"
 
 # Immutable dependency pins. Update these deliberately and test as a set.
@@ -42,7 +42,7 @@ FZF_BASE_URL="https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}"
 # Runtime payload in share/. Hashes pin curl|bash fetches of those files.
 ZISH_SHARE_REF="${ZISH_SHARE_REF:-main}"
 ZISH_SHARE_BASE="${ZISH_SHARE_BASE:-https://raw.githubusercontent.com/kongjiadongyuan/zish/${ZISH_SHARE_REF}/share}"
-SHARE_CONFIG_SHA256="3fc786eb0acf1d4b949798c2919fc328a340906548fcf5f21822bc8728ce2570"
+SHARE_CONFIG_SHA256="4e13db4d9e706f396f8fbef48afb30a29e9d3e84c0cf99310ed8a9879d36e306"
 SHARE_PLUGINS_SHA256="ce4715443f75f52630439737635735076499c43b21847d925c2ab7737f552326"
 
 # Loaded from share/plugins.txt after resolve_share_payload.
@@ -1258,14 +1258,15 @@ update_zshrc_loader() {
 bootstrap_plugins() {
   log "bootstrapping pinned zsh plugins"
   if (( FLAG_DRY_RUN )); then
-    run env ZDOTDIR="$ZDOTDIR" zsh -ic 'exit 0'
+    # -l: login shell so ~/.zprofile is exercised (common source of sticky `emulate sh`)
+    run env ZDOTDIR="$ZDOTDIR" zsh -lic 'exit 0'
     return 0
   fi
 
   local logfile
   logfile="$(mktemp "${TMPDIR:-/tmp}/fishlike-zsh-bootstrap.XXXXXX")"
   register_temp "$logfile"
-  if ! env ZDOTDIR="$ZDOTDIR" zsh -ic 'exit 0' >"$logfile" 2>&1; then
+  if ! env ZDOTDIR="$ZDOTDIR" zsh -lic 'exit 0' >"$logfile" 2>&1; then
     warn "zsh plugin bootstrap failed:"
     tail -n 40 "$logfile" >&2 || true
     die "could not bootstrap zsh plugins"
@@ -1383,7 +1384,7 @@ verify() {
   register_temp "$stderr_file"
 
   if report="$(
-    env ZDOTDIR="$ZDOTDIR" zsh -ic '
+    env ZDOTDIR="$ZDOTDIR" zsh -lic '
       typeset -i fail=0
       pass_check() { print "$1=ok" }
       fail_check() { print "$1=FAILED"; fail=1 }

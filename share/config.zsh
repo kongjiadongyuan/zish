@@ -1,12 +1,21 @@
 # Managed by install-fishlike-zsh.sh; edits may be replaced.
 # Runtime config. Paths come from env.zsh (written by the installer).
 
+# ---- force real zsh mode -----------------------------------------------------
+# A common .zprofile pattern is:
+#   emulate -L sh
+#   . ~/.profile
+# At top level of a login shell that can leave the session stuck in *sh*
+# emulation (localoptions sticky). Then `$+`, EXTENDED_GLOB, compinit, and
+# plugin load all misbehave — while `zsh -ic` (installer verify) still passes
+# because it never reads .zprofile. Reassert zsh before anything else.
+# No -L/-R here: we want this permanent for the interactive session.
+emulate zsh
+
 # ---- zsh stdlib (must work before any plugin) --------------------------------
-# Some ~/.zshenv files replace fpath and drop the stock function tree. That
-# breaks autoload (is-at-least, compinit, add-zsh-hook) while `zsh -f` still
-# looks fine, because -f skips ~/.zshenv. Repair before anything else.
-# Do NOT `emulate -L` at top level here: it would discard later setopts when
-# this file finishes being sourced.
+# Some environments drop stock fpath entries. Repair before autoload.
+# Do NOT `emulate -L` at top level of this file: it would discard later setopts
+# when sourcing finishes.
 _fishlike_ensure_zsh_stdlib() {
   emulate -L zsh
   setopt extended_glob null_glob
@@ -319,9 +328,17 @@ if [[ -r "$FISHLIKE_ANTIDOTE_DIR/antidote.zsh" && -r "$FISHLIKE_PLUGIN_FILE" ]];
       _fishlike_build_plugin_bundle || print -u2 'fishlike-zsh: failed to build plugin bundle'
     fi
     if _fishlike_bundle_is_managed && _fishlike_plugin_files_present; then
-      # Isolate $0 leakage between plugins: source each `source '...'` line in a
-      # nested context when the bundle is the usual antidote static format.
       if _fishlike_source_plugin_bundle "$FISHLIKE_PLUGIN_BUNDLE"; then
+        # ez-compinit defers real compinit to precmd; fzf-tab enables at source
+        # time and needs completion functions immediately. Run it now.
+        if (( $+functions[run-compinit] )); then
+          run-compinit
+        elif (( $+functions[compinit] )); then
+          compinit -C
+        else
+          autoload -Uz compinit && compinit -C
+        fi
+        (( $+functions[enable-fzf-tab] )) && enable-fzf-tab
         _fishlike_plugins_ready=1
       else
         print -u2 'fishlike-zsh: failed to load plugin bundle'
