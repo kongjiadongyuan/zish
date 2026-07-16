@@ -1,6 +1,55 @@
 # Managed by install-fishlike-zsh.sh; edits may be replaced.
 # Runtime config. Paths come from env.zsh (written by the installer).
 
+# ---- zsh stdlib (must work before any plugin) --------------------------------
+# Some ~/.zshenv files replace fpath and drop the stock function tree. That
+# breaks autoload (is-at-least, compinit, add-zsh-hook) while `zsh -f` still
+# looks fine, because -f skips ~/.zshenv. Repair before anything else.
+# Do NOT `emulate -L` at top level here: it would discard later setopts when
+# this file finishes being sourced.
+_fishlike_ensure_zsh_stdlib() {
+  emulate -L zsh
+  setopt extended_glob null_glob
+  local -a candidates cleaned
+  local d
+
+  candidates=(
+    "/usr/share/zsh/${ZSH_VERSION}/functions"
+    /usr/share/zsh/functions
+    /usr/local/share/zsh/site-functions
+  )
+
+  for d in $candidates; do
+    [[ -d $d ]] || continue
+    case " $fpath " in
+      *" $d "*) ;;
+      *) fpath=($d $fpath) ;;
+    esac
+  done
+
+  cleaned=()
+  for d in $fpath; do
+    [[ -d $d ]] && cleaned+=($d)
+  done
+  (( ${#cleaned} )) && fpath=($cleaned)
+
+  unfunction is-at-least 2>/dev/null || true
+  autoload -Uz is-at-least || return 1
+  is-at-least 5.4 || return 1
+  return 0
+}
+
+if ! _fishlike_ensure_zsh_stdlib; then
+  print -u2 -- 'fishlike-zsh: stock zsh functions are unavailable (is-at-least/compinit).'
+  print -u2 -- 'fishlike-zsh: check ~/.zshenv — it often overwrites $fpath.'
+  print -u2 -- 'fishlike-zsh: current fpath:'
+  print -u2 -l -- $fpath
+  print -u2 -- 'fishlike-zsh: refusing to load plugins with a broken stdlib.'
+  unset -f _fishlike_ensure_zsh_stdlib
+  return 0 2>/dev/null || true
+fi
+unset -f _fishlike_ensure_zsh_stdlib
+
 # ---- history and shell behavior --------------------------------------------
 export HISTFILE="${HISTFILE:-${ZDOTDIR:-$HOME}/.zsh_history}"
 export HISTSIZE="${HISTSIZE:-100000}"

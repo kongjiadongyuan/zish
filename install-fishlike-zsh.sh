@@ -29,7 +29,7 @@
 
 set -euo pipefail
 
-INSTALLER_VERSION="2.2.0"
+INSTALLER_VERSION="2.2.1"
 MIN_ZSH_VERSION="5.4.2"
 
 # Immutable dependency pins. Update these deliberately and test as a set.
@@ -42,7 +42,7 @@ FZF_BASE_URL="https://github.com/junegunn/fzf/releases/download/v${FZF_VERSION}"
 # Runtime payload in share/. Hashes pin curl|bash fetches of those files.
 ZISH_SHARE_REF="${ZISH_SHARE_REF:-main}"
 ZISH_SHARE_BASE="${ZISH_SHARE_BASE:-https://raw.githubusercontent.com/kongjiadongyuan/zish/${ZISH_SHARE_REF}/share}"
-SHARE_CONFIG_SHA256="52d856a1fc6d8ada6480524b0cc6497c8f5253121203c3cc0704a89966329e83"
+SHARE_CONFIG_SHA256="237da479c8da2e5bf1e498654b4010ea6593a4e93b4a686ad3f2934fcee41120"
 SHARE_PLUGINS_SHA256="ce4715443f75f52630439737635735076499c43b21847d925c2ab7737f552326"
 
 # Loaded from share/plugins.txt after resolve_share_payload.
