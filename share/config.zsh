@@ -40,8 +40,10 @@ export LSCOLORS="${LSCOLORS:-exfxcxdxbxegedabagacad}"
 
 # ---- prompt -----------------------------------------------------------------
 _fishlike_prompt() {
-  local last=$? branch short gitseg status
-  # abbreviated path like fish
+  # Capture exit status first. Do not name locals "status" — in zsh that is a
+  # read-only special parameter ($?); assigning it errors and leaves $status=1
+  # glued onto the path in PROMPT (looks like "~1").
+  local last=$? branch short gitseg errseg
   short="${PWD/#$HOME/~}"
   if [[ $short != / && $short == */* ]]; then
     local -a parts=("${(@s:/:)short}")
@@ -61,8 +63,8 @@ _fishlike_prompt() {
       || git rev-parse --short HEAD 2>/dev/null) || branch=
     [[ -n $branch ]] && gitseg=" %F{magenta}(${branch})%f"
   fi
-  (( last )) && status=" %B%F{red}[${last}]%f%b"
-  PROMPT="%B%F{green}%n%b%f@%m %F{green}${short}%f${gitseg}${status}%(!.#.>) "
+  (( last )) && errseg=" %B%F{red}[${last}]%f%b"
+  PROMPT="%B%F{green}%n%b%f@%m %F{green}${short}%f${gitseg}${errseg}%(!.#.>) "
 }
 precmd_functions=(_fishlike_prompt ${precmd_functions:#_fishlike_prompt})
 
