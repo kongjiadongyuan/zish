@@ -15,7 +15,7 @@
 
 set -euo pipefail
 
-INSTALLER_VERSION="3.0.0"
+INSTALLER_VERSION="3.0.1"
 MIN_ZSH_VERSION="5.4.2"
 ZISH_REPO="${ZISH_REPO:-kongjiadongyuan/zish}"
 ZISH_REF="${ZISH_REF:-main}"
@@ -643,34 +643,6 @@ uninstall_fishlike() {
   ok "uninstall complete (backups: $FISHLIKE_BACKUP_DIR/$TIMESTAMP)"
 }
 
-# ---- verify -----------------------------------------------------------------
-verify() {
-  log "verifying"
-  if (( FLAG_DRY_RUN )); then ok "skip verify (dry-run)"; return 0; fi
-  [[ -r "$FISHLIKE_ENV" && -r "$FISHLIKE_CONFIG" && -r "$ZSH_PLUGINS_ZSH" ]] \
-    || die "managed files missing"
-  local report
-  report="$(
-    env ZDOTDIR="$ZDOTDIR" zsh -lic '
-      typeset -i fail=0
-      p() { print "$1=ok" }
-      f() { print "$1=FAILED"; fail=1 }
-      [[ "$(emulate)" == zsh ]] && p emulate || f emulate
-      [[ -r $FISHLIKE_PLUGIN_BUNDLE ]] && p bundle || f bundle
-      (( ! $+functions[antidote] )) && p no_antidote || f no_antidote
-      [[ "$(bindkey "^I")" == *fzf-tab* ]] && p fzf_tab || f fzf_tab
-      [[ "$(bindkey "^R")" == *_fishlike_history* ]] && p ctrl_r || f ctrl_r
-      (( $+functions[prevd] )) && p dirhist || f dirhist
-      (( $+ZSH_AUTOSUGGEST_STRATEGY )) && p autosuggest || f autosuggest
-      print "VERIFY=$fail"
-      exit $fail
-    ' 2>/dev/null
-  )" || true
-  printf '%s\n' "$report" | sed 's/^/    /'
-  printf '%s\n' "$report" | grep -q '^VERIFY=0$' || die "verification failed"
-  ok "verification passed"
-}
-
 maybe_chsh() {
   (( FLAG_NO_CHSH )) && { ok "login shell unchanged"; return 0; }
   local zsh_path current
@@ -706,7 +678,6 @@ main() {
   install_share_files
   build_plugins
   update_zshrc
-  verify
   write_state
   maybe_chsh
 

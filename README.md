@@ -34,6 +34,7 @@ bash install-fishlike-zsh.sh
 | Uninstall | `bash install-fishlike-zsh.sh --uninstall` (moves managed trees; keeps history & `.zshrc.local`) |
 | System packages | Not installed unless `--install-deps` |
 | Login shell | Unchanged unless you pass `--chsh` / answer yes |
+| Post-install check | None — open a new shell and use it |
 
 Local overrides: `~/.zshrc.local`.
 

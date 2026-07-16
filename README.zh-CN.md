@@ -34,6 +34,7 @@ bash install-fishlike-zsh.sh
 | 卸载 | `bash install-fishlike-zsh.sh --uninstall`（挪走托管目录；保留历史与 `.zshrc.local`） |
 | 系统包 | 默认不装；`--install-deps` 才尝试 |
 | 登录 Shell | 默认不改；需 `--chsh` 或确认 |
+| 装完检查 | 没有——开新终端直接用 |
 
 本机覆盖：`~/.zshrc.local`。
 
