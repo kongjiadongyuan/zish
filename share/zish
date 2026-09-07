@@ -164,22 +164,31 @@ cmd_notice() {
 }
 
 cmd_update() {
-  local inst
+  local inst cleanup
   inst="$(fetch_installer)"
-  trap 'rm -f -- "$inst"' EXIT
+  # Bake the path into the trap. `local inst` is gone when EXIT runs after return,
+  # and with `set -u` that becomes: inst: unbound variable.
+  printf -v cleanup 'rm -f -- %q' "$inst"
+  trap "$cleanup" EXIT
   bash "$inst" --force --non-interactive --no-chsh
   rm -f -- "$CHECK_FILE"
+  trap - EXIT
+  eval "$cleanup"
 }
 
 cmd_uninstall() {
-  local inst="$ZISH_DIR/install.sh"
+  local inst cleanup
+  inst="$ZISH_DIR/install.sh"
   if [[ -x "$inst" || -f "$inst" ]]; then
     bash "$inst" --uninstall "$@"
     return
   fi
   inst="$(fetch_installer)"
-  trap 'rm -f -- "$inst"' EXIT
+  printf -v cleanup 'rm -f -- %q' "$inst"
+  trap "$cleanup" EXIT
   bash "$inst" --uninstall "$@"
+  trap - EXIT
+  eval "$cleanup"
 }
 
 cmd="${1:-help}"
