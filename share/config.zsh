@@ -1,5 +1,5 @@
-# Managed by install-fishlike-zsh.sh; edits may be replaced.
-# Runtime config. Paths come from env.zsh (written by the installer).
+# Managed by zish; edits may be replaced.
+# Runtime config. Installed to ~/.config/zish/config.zsh.
 #
 # Design: stay small. Do not paper over a broken shell environment here.
 # Fix login issues in ~/.zprofile (use: emulate sh -c 'source ~/.profile').
@@ -21,10 +21,10 @@ autoload -Uz colors add-zsh-hook
 colors
 
 # ---- PATH / colors ----------------------------------------------------------
-if [[ -d ${FISHLIKE_LOCAL_BIN:-} ]]; then
+if [[ -d ${ZISH_BIN:-} ]]; then
   case ":$PATH:" in
-    *":$FISHLIKE_LOCAL_BIN:"*) ;;
-    *) PATH="$FISHLIKE_LOCAL_BIN:$PATH" ;;
+    *":$ZISH_BIN:"*) ;;
+    *) PATH="$ZISH_BIN:$PATH" ;;
   esac
 fi
 
@@ -39,7 +39,7 @@ export CLICOLOR="${CLICOLOR:-1}"
 export LSCOLORS="${LSCOLORS:-exfxcxdxbxegedabagacad}"
 
 # ---- prompt -----------------------------------------------------------------
-_fishlike_prompt() {
+_zish_prompt() {
   # Capture exit status first. Do not name locals "status" — in zsh that is a
   # read-only special parameter ($?); assigning it errors and leaves $status=1
   # glued onto the path in PROMPT (looks like "~1").
@@ -66,14 +66,14 @@ _fishlike_prompt() {
   (( last )) && errseg=" %B%F{red}[${last}]%f%b"
   PROMPT="%B%F{green}%n%b%f@%m %F{green}${short}%f${gitseg}${errseg}%(!.#.>) "
 }
-precmd_functions=(_fishlike_prompt ${precmd_functions:#_fishlike_prompt})
+precmd_functions=(_zish_prompt ${precmd_functions:#_zish_prompt})
 
 # terminal title
-_fishlike_title() { [[ -t 1 && $TERM != dumb ]] && print -Pn '\e]0;%n@%m: %~\a' }
-add-zsh-hook precmd _fishlike_title
+_zish_title() { [[ -t 1 && $TERM != dumb ]] && print -Pn '\e]0;%n@%m: %~\a' }
+add-zsh-hook precmd _zish_title
 
 # ---- plugins (read-only; built at install time) ------------------------------
-# The installer writes FISHLIKE_PLUGIN_BUNDLE via Antidote once. Startup must
+# The installer writes ZISH_PLUGIN_BUNDLE via Antidote once. Startup must
 # not clone, rebuild, or quarantine — re-run the installer to repair.
 zstyle ':completion:*' menu no
 zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}'
@@ -88,8 +88,8 @@ HISTORY_SUBSTRING_SEARCH_ENSURE_UNIQUE=1
 HISTORY_SUBSTRING_SEARCH_HIGHLIGHT_FOUND='fg=green,bold'
 HISTORY_SUBSTRING_SEARCH_HIGHLIGHT_NOT_FOUND='fg=red,bold'
 
-if [[ -r ${FISHLIKE_PLUGIN_BUNDLE:-} ]]; then
-  source "${FISHLIKE_PLUGIN_BUNDLE}"
+if [[ -r ${ZISH_PLUGIN_BUNDLE:-} ]]; then
+  source "${ZISH_PLUGIN_BUNDLE}"
   # ez-compinit defers real compinit to precmd; fzf-tab needs it now.
   if (( $+functions[run-compinit] )); then
     run-compinit
@@ -98,78 +98,78 @@ if [[ -r ${FISHLIKE_PLUGIN_BUNDLE:-} ]]; then
   fi
   (( $+functions[enable-fzf-tab] )) && enable-fzf-tab
 else
-  print -u2 'fishlike-zsh: missing plugin bundle; run the installer again'
+  print -u2 'zish: missing plugin bundle; run the installer again'
   autoload -Uz compinit && compinit -C
 fi
 
 # ---- directory history (prevd / nextd / cdh) ---------------------------------
-typeset -ga _fishlike_dirs=("$PWD")
-typeset -gi _fishlike_dirs_i=1
-typeset -gi _fishlike_dirs_nav=0
+typeset -ga _zish_dirs=("$PWD")
+typeset -gi _zish_dirs_i=1
+typeset -gi _zish_dirs_nav=0
 
-_fishlike_dirs_push() {
-  (( _fishlike_dirs_nav )) && return 0
-  if (( _fishlike_dirs_i < ${#_fishlike_dirs} )); then
-    _fishlike_dirs=("${_fishlike_dirs[@]:0:_fishlike_dirs_i}")
+_zish_dirs_push() {
+  (( _zish_dirs_nav )) && return 0
+  if (( _zish_dirs_i < ${#_zish_dirs} )); then
+    _zish_dirs=("${_zish_dirs[@]:0:_zish_dirs_i}")
   fi
-  if (( ${#_fishlike_dirs} == 0 )) || [[ ${_fishlike_dirs[-1]} != $PWD ]]; then
-    _fishlike_dirs+=("$PWD")
-    (( ${#_fishlike_dirs} > 50 )) && _fishlike_dirs=("${_fishlike_dirs[@]: -50}")
+  if (( ${#_zish_dirs} == 0 )) || [[ ${_zish_dirs[-1]} != $PWD ]]; then
+    _zish_dirs+=("$PWD")
+    (( ${#_zish_dirs} > 50 )) && _zish_dirs=("${_zish_dirs[@]: -50}")
   fi
-  _fishlike_dirs_i=${#_fishlike_dirs}
+  _zish_dirs_i=${#_zish_dirs}
 }
-add-zsh-hook chpwd _fishlike_dirs_push
+add-zsh-hook chpwd _zish_dirs_push
 
 prevd() {
-  (( _fishlike_dirs_i <= 1 )) && { print -u2 'prevd: beginning'; return 1 }
-  _fishlike_dirs_nav=1
-  _fishlike_dirs_i=$((_fishlike_dirs_i - 1))
-  cd -- "$_fishlike_dirs[_fishlike_dirs_i]" || { _fishlike_dirs_nav=0; return 1 }
-  _fishlike_dirs_nav=0
+  (( _zish_dirs_i <= 1 )) && { print -u2 'prevd: beginning'; return 1 }
+  _zish_dirs_nav=1
+  _zish_dirs_i=$((_zish_dirs_i - 1))
+  cd -- "$_zish_dirs[_zish_dirs_i]" || { _zish_dirs_nav=0; return 1 }
+  _zish_dirs_nav=0
 }
 nextd() {
-  (( _fishlike_dirs_i >= ${#_fishlike_dirs} )) && { print -u2 'nextd: end'; return 1 }
-  _fishlike_dirs_nav=1
-  _fishlike_dirs_i=$((_fishlike_dirs_i + 1))
-  cd -- "$_fishlike_dirs[_fishlike_dirs_i]" || { _fishlike_dirs_nav=0; return 1 }
-  _fishlike_dirs_nav=0
+  (( _zish_dirs_i >= ${#_zish_dirs} )) && { print -u2 'nextd: end'; return 1 }
+  _zish_dirs_nav=1
+  _zish_dirs_i=$((_zish_dirs_i + 1))
+  cd -- "$_zish_dirs[_zish_dirs_i]" || { _zish_dirs_nav=0; return 1 }
+  _zish_dirs_nav=0
 }
 cdh() {
-  (( ${#_fishlike_dirs} )) || { print -u2 'cdh: empty'; return 1 }
+  (( ${#_zish_dirs} )) || { print -u2 'cdh: empty'; return 1 }
   local dest
   if (( $+commands[fzf] )); then
-    dest=$(printf '%s\n' "${_fishlike_dirs[@]}" | fzf --height=40% --reverse --tac --prompt='cdh> ') || return 1
+    dest=$(printf '%s\n' "${_zish_dirs[@]}" | fzf --height=40% --reverse --tac --prompt='cdh> ') || return 1
   else
     local i=1 d n
-    for d in "${_fishlike_dirs[@]}"; do print -r -- "$i  $d"; (( i++ )); done
+    for d in "${_zish_dirs[@]}"; do print -r -- "$i  $d"; (( i++ )); done
     print -n 'cdh number: '; read -r n
-    [[ $n == <-> && n -ge 1 && n -le ${#_fishlike_dirs} ]] || return 1
-    dest=$_fishlike_dirs[n]
+    [[ $n == <-> && n -ge 1 && n -le ${#_zish_dirs} ]] || return 1
+    dest=$_zish_dirs[n]
   fi
   [[ -n $dest ]] && cd -- "$dest"
 }
 
 # ---- key bindings -----------------------------------------------------------
-_fishlike_alt_left() {
+_zish_alt_left() {
   if [[ -z $BUFFER && -z $PREBUFFER ]]; then prevd 2>/dev/null; zle reset-prompt
   else zle backward-word; fi
 }
-_fishlike_alt_right() {
+_zish_alt_right() {
   if [[ -z $BUFFER && -z $PREBUFFER ]]; then nextd 2>/dev/null; zle reset-prompt
   else zle forward-word; fi
 }
-zle -N _fishlike_alt_left
-zle -N _fishlike_alt_right
+zle -N _zish_alt_left
+zle -N _zish_alt_right
 
 if (( $+commands[fzf] )); then
-  _fishlike_history() {
+  _zish_history() {
     local selected
     selected=$(fc -rln 1 2>/dev/null | awk 'NF && !seen[$0]++' \
       | fzf --height=40% --reverse --tiebreak=index --query="$LBUFFER" --prompt='hist> ' --scheme=history) \
       && LBUFFER=$selected
     zle reset-prompt
   }
-  zle -N _fishlike_history
+  zle -N _zish_history
 fi
 
 (( $+functions[_zsh_autosuggest_bind_widgets] )) && _zsh_autosuggest_bind_widgets
@@ -193,13 +193,13 @@ if (( $+widgets[autosuggest-accept] )); then
   bindkey '^[OF' autosuggest-accept
   bindkey '^[[4~' autosuggest-accept
 fi
-bindkey '^[b' _fishlike_alt_left
-bindkey '^[f' _fishlike_alt_right
-bindkey '^[[1;3D' _fishlike_alt_left
-bindkey '^[[1;3C' _fishlike_alt_right
+bindkey '^[b' _zish_alt_left
+bindkey '^[f' _zish_alt_right
+bindkey '^[[1;3D' _zish_alt_left
+bindkey '^[[1;3C' _zish_alt_right
 bindkey '^[[1;5D' backward-word
 bindkey '^[[1;5C' forward-word
-(( $+widgets[_fishlike_history] )) && bindkey '^R' _fishlike_history
+(( $+widgets[_zish_history] )) && bindkey '^R' _zish_history
 
 # ---- aliases ----------------------------------------------------------------
 if command ls --color=auto / >/dev/null 2>&1; then
@@ -210,5 +210,8 @@ else
   alias ll='ls -lah' la='ls -A' l='ls -CF'
 fi
 
-# ---- local overrides --------------------------------------------------------
-[[ -r ${FISHLIKE_LOCAL_RC:-} ]] && source "$FISHLIKE_LOCAL_RC"
+# ---- update notice ----------------------------------------------------------
+# Cached; a background check runs at most once a day. Never blocks startup.
+if [[ -o interactive && -t 1 ]] && (( $+commands[zish] )); then
+  zish notice
+fi

@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+# zish — manage this machine's zish install.
+set -euo pipefail
+
+ZISH_DIR="${ZISH_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/zish}"
+STATE="${ZISH_DIR}/state"
+CHECK_FILE="${ZISH_DIR}/update-check"
+CHECK_TTL="${ZISH_CHECK_TTL:-86400}"
+DEFAULT_REPO="kongjiadongyuan/zish"
+DEFAULT_REF="main"
+
+usage() {
+  cat <<EOF
+Usage: zish <command>
+
+  version      Print installed version
+  check        Check the remote version now
+  update       Fetch latest zish from the network and reinstall
+  uninstall    Remove zish (keeps history and .zshrc outside the loader)
+  help         This help
+EOF
+}
+
+state_get() {
+  local key="$1"
+  [[ -r "$STATE" ]] || return 0
+  sed -n "s/^${key}=//p" "$STATE" | head -1
+}
+
+check_get() {
+  local key="$1"
+  [[ -r "$CHECK_FILE" ]] || return 0
+  sed -n "s/^${key}=//p" "$CHECK_FILE" | head -1
+}
+
+version_gt() {
+  local a="$1" b="$2"
+  [[ -n "$a" && -n "$b" && "$a" != "$b" ]] || return 1
+  [[ "$(printf '%s\n%s\n' "$a" "$b" | sort -V | tail -n1)" == "$a" ]]
+}
+
+installer_url() {
+  local repo ref
+  repo="$(state_get repo)"
+  ref="$(state_get ref)"
+  repo="${repo:-$DEFAULT_REPO}"
+  ref="${ref:-$DEFAULT_REF}"
+  printf 'https://raw.githubusercontent.com/%s/%s/install-fishlike-zsh.sh\n' "$repo" "$ref"
+}
+
+download_to() {
+  local url="$1" dest="$2"
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 15 --retry 3 -o "$dest" "$url"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q -O "$dest" "$url"
+  else
+    printf 'zish: need curl or wget\n' >&2
+    exit 1
+  fi
+}
+
+fetch_installer() {
+  local dest
+  dest="$(mktemp "${TMPDIR:-/tmp}/zish-installer.XXXXXX")"
+  download_to "$(installer_url)" "$dest"
+  chmod 0700 "$dest"
+  printf '%s\n' "$dest"
+}
+
+fetch_remote_version() {
+  local url v
+  url="$(installer_url)"
+  if command -v curl >/dev/null 2>&1; then
+    v="$(curl -fsSL --proto '=https' --tlsv1.2 --connect-timeout 10 --retry 2 --max-time 20 "$url" \
+      | sed -n 's/^INSTALLER_VERSION="\([^"]*\)".*/\1/p' | head -1)"
+  elif command -v wget >/dev/null 2>&1; then
+    v="$(wget -qO- -T 20 "$url" \
+      | sed -n 's/^INSTALLER_VERSION="\([^"]*\)".*/\1/p' | head -1)"
+  else
+    return 1
+  fi
+  [[ -n "$v" ]] || return 1
+  printf '%s\n' "$v"
+}
+
+write_check() {
+  mkdir -p "$ZISH_DIR"
+  cat >"$CHECK_FILE" <<EOF
+checked_at=$1
+remote=$2
+EOF
+  chmod 0600 "$CHECK_FILE"
+}
+
+print_notice() {
+  local local_v="$1" remote="$2"
+  if [[ -t 2 ]]; then
+    printf '\033[1;33mzish update available:\033[0m %s → %s   run \033[1mzish update\033[0m\n' \
+      "$local_v" "$remote" >&2
+  else
+    printf 'zish update available: %s → %s   run zish update\n' "$local_v" "$remote" >&2
+  fi
+}
+
+cmd_version() {
+  local v remote
+  v="$(state_get version)"
+  if [[ -z "$v" ]]; then
+    printf 'zish: not installed\n' >&2
+    exit 1
+  fi
+  printf 'zish %s\n' "$v"
+  remote="$(check_get remote)"
+  if version_gt "$remote" "$v"; then
+    printf 'update available: %s  (zish update)\n' "$remote"
+  fi
+}
+
+cmd_check() {
+  local quiet=0 arg local_v remote
+  for arg in "$@"; do
+    case "$arg" in
+      --quiet|-q) quiet=1 ;;
+    esac
+  done
+  local_v="$(state_get version)"
+  remote="$(fetch_remote_version)" || {
+    (( quiet )) && exit 0
+    printf 'zish: could not read remote version\n' >&2
+    exit 1
+  }
+  write_check "$(date +%s)" "$remote"
+  (( quiet )) && exit 0
+  if [[ -z "$local_v" ]]; then
+    printf 'remote %s\n' "$remote"
+    exit 0
+  fi
+  if version_gt "$remote" "$local_v"; then
+    printf 'zish %s (local)\n' "$local_v"
+    printf 'zish %s (remote)\n' "$remote"
+    print_notice "$local_v" "$remote"
+  else
+    printf 'zish %s (up to date)\n' "$local_v"
+  fi
+}
+
+cmd_notice() {
+  local local_v remote checked now age
+  local_v="$(state_get version)"
+  [[ -n "$local_v" ]] || return 0
+  remote="$(check_get remote)"
+  checked="$(check_get checked_at)"
+  if [[ -n "$remote" ]] && version_gt "$remote" "$local_v"; then
+    print_notice "$local_v" "$remote"
+  fi
+  now="$(date +%s)"
+  age=$((now - ${checked:-0}))
+  if [[ -z "$checked" || "$age" -ge "$CHECK_TTL" || "$age" -lt 0 ]]; then
+    "$0" check --quiet >/dev/null 2>&1 &
+    disown $! 2>/dev/null || true
+  fi
+  return 0
+}
+
+cmd_update() {
+  local inst
+  inst="$(fetch_installer)"
+  trap 'rm -f -- "$inst"' EXIT
+  bash "$inst" --force --non-interactive --no-chsh
+  rm -f -- "$CHECK_FILE"
+}
+
+cmd_uninstall() {
+  local inst="$ZISH_DIR/install.sh"
+  if [[ -x "$inst" || -f "$inst" ]]; then
+    bash "$inst" --uninstall "$@"
+    return
+  fi
+  inst="$(fetch_installer)"
+  trap 'rm -f -- "$inst"' EXIT
+  bash "$inst" --uninstall "$@"
+}
+
+cmd="${1:-help}"
+shift || true
+case "$cmd" in
+  version|-v|--version) cmd_version ;;
+  check) cmd_check "$@" ;;
+  notice) cmd_notice ;;
+  update|upgrade) cmd_update ;;
+  uninstall) cmd_uninstall "$@" ;;
+  help|-h|--help) usage ;;
+  *)
+    printf 'zish: unknown command: %s\n' "$cmd" >&2
+    usage >&2
+    exit 1
+    ;;
+esac
