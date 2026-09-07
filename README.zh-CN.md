@@ -31,7 +31,7 @@ bash install-fishlike-zsh.sh
 | 项 | 策略 |
 |----|------|
 | 版本 | 每次安装从网络拉最新（`main` / latest fzf release） |
-| 启动 | 只读：source 安装时生成的 `plugins.zsh`，运行时不跑 Antidote |
+| 启动 | 只读：source 安装时生成的 `plugins.zsh`；补全只 `compinit` 一次并走缓存；运行时不跑 Antidote |
 | 备份 | `~/.config/zish/backup/<timestamp>/` |
 | 卸载 | `zish uninstall`（挪走 `~/.config/zish`；保留历史） |
 | 系统包 | 默认不装；`--install-deps` 才尝试 |

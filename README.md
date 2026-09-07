@@ -31,7 +31,7 @@ bash install-fishlike-zsh.sh
 | Topic | Policy |
 |-------|--------|
 | Versions | Latest from GitHub on each install (`main` / latest fzf release) |
-| Startup | Read-only: sources prebuilt `plugins.zsh` — no Antidote at runtime |
+| Startup | Read-only: sources prebuilt `plugins.zsh`; one cached `compinit`; no Antidote at runtime |
 | Backups | `~/.config/zish/backup/<timestamp>/` |
 | Uninstall | `zish uninstall` (moves `~/.config/zish`; keeps history) |
 | System packages | Not installed unless `--install-deps` |

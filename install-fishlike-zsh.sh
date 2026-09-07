@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-INSTALLER_VERSION="3.4.0"
+INSTALLER_VERSION="3.5.0"
 MIN_ZSH_VERSION="5.4.2"
 ZISH_REPO="${ZISH_REPO:-kongjiadongyuan/zish}"
 ZISH_REF="${ZISH_REF:-main}"
@@ -571,6 +571,34 @@ build_plugins() {
   ok "plugin bundle ready"
 }
 
+compile_zwc() {
+  log "byte-compiling zsh scripts"
+  if (( FLAG_DRY_RUN )); then
+    log "would zcompile config and plugins"
+    return 0
+  fi
+  if ! env ZISH_DIR="$ZISH_DIR" zsh -fc '
+    emulate zsh
+    local f
+    for f in \
+      $ZISH_DIR/config.zsh \
+      $ZISH_DIR/plugins.zsh \
+      $ZISH_DIR/plugins/github.com/Aloxaf/fzf-tab/fzf-tab.zsh \
+      $ZISH_DIR/plugins/github.com/zsh-users/zsh-autosuggestions/zsh-autosuggestions.zsh \
+      $ZISH_DIR/plugins/github.com/zsh-users/zsh-history-substring-search/zsh-history-substring-search.zsh \
+      $ZISH_DIR/plugins/github.com/zsh-users/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh \
+      $ZISH_DIR/plugins/github.com/zsh-users/zsh-syntax-highlighting/highlighters/main/main-highlighter.zsh
+    do
+      [[ -r $f ]] || continue
+      zcompile -R -- $f 2>/dev/null || true
+    done
+  '; then
+    warn "zcompile skipped"
+    return 0
+  fi
+  ok "compiled .zwc"
+}
+
 # ---- zshrc loader -----------------------------------------------------------
 loader_count() {
   local f="$1" n=0
@@ -745,6 +773,7 @@ main() {
   install_fzf
   install_antidote
   build_plugins
+  compile_zwc
   update_zshrc
   write_state
   retire_old_layout

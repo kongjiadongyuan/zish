@@ -14,11 +14,10 @@ export SAVEHIST="${SAVEHIST:-100000}"
 setopt HIST_IGNORE_ALL_DUPS HIST_REDUCE_BLANKS SHARE_HISTORY EXTENDED_HISTORY
 setopt AUTO_CD AUTO_PUSHD PUSHD_IGNORE_DUPS
 setopt INTERACTIVE_COMMENTS NO_BEEP PROMPT_SUBST
-setopt EXTENDED_GLOB          # required by ez-compinit and many plugins
-setopt FUNCTION_ARGZERO       # plugins that resolve paths from $0
+setopt EXTENDED_GLOB
+setopt FUNCTION_ARGZERO
 
-autoload -Uz colors add-zsh-hook
-colors
+autoload -Uz add-zsh-hook
 
 # ---- PATH / colors ----------------------------------------------------------
 if [[ -d ${ZISH_BIN:-} ]]; then
@@ -39,6 +38,33 @@ export CLICOLOR="${CLICOLOR:-1}"
 export LSCOLORS="${LSCOLORS:-exfxcxdxbxegedabagacad}"
 
 # ---- prompt -----------------------------------------------------------------
+# Read .git/HEAD instead of spawning git. Walk parents with [[ -e ]], not git.
+_zish_git_branch() {
+  emulate -L zsh
+  local d=$PWD gitdir head raw
+  while true; do
+    if [[ -d $d/.git ]]; then
+      gitdir=$d/.git
+      break
+    elif [[ -f $d/.git ]]; then
+      IFS= read -r raw < $d/.git || return 1
+      gitdir=${raw#gitdir:}
+      gitdir=${gitdir##[[:space:]]#}
+      [[ $gitdir == /* ]] || gitdir=$d/$gitdir
+      break
+    fi
+    [[ $d == / ]] && return 1
+    d=${d:h}
+  done
+  [[ -r $gitdir/HEAD ]] || return 1
+  IFS= read -r head < $gitdir/HEAD || return 1
+  if [[ $head == ref:\ refs/heads/* ]]; then
+    REPLY=${head#ref: refs/heads/}
+  else
+    REPLY=${head[1,7]}
+  fi
+}
+
 _zish_prompt() {
   # Capture exit status first. Do not name locals "status" — in zsh that is a
   # read-only special parameter ($?); assigning it errors and leaves $status=1
@@ -58,23 +84,18 @@ _zish_prompt() {
     done
     short=${(j:/:)parts}
   fi
-  if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    branch=$(git symbolic-ref --quiet --short HEAD 2>/dev/null \
-      || git rev-parse --short HEAD 2>/dev/null) || branch=
-    [[ -n $branch ]] && gitseg=" %F{magenta}(${branch})%f"
+  if _zish_git_branch; then
+    gitseg=" %F{magenta}(${REPLY})%f"
   fi
   (( last )) && errseg=" %B%F{red}[${last}]%f%b"
   PROMPT="%B%F{green}%n%b%f@%m %F{green}${short}%f${gitseg}${errseg}%(!.#.>) "
 }
 precmd_functions=(_zish_prompt ${precmd_functions:#_zish_prompt})
 
-# terminal title
 _zish_title() { [[ -t 1 && $TERM != dumb ]] && print -Pn '\e]0;%n@%m: %~\a' }
 add-zsh-hook precmd _zish_title
 
-# ---- plugins (read-only; built at install time) ------------------------------
-# The installer writes ZISH_PLUGIN_BUNDLE via Antidote once. Startup must
-# not clone, rebuild, or quarantine — re-run the installer to repair.
+# ---- plugins ----------------------------------------------------------------
 zstyle ':completion:*' menu no
 zstyle ':completion:*' matcher-list 'm:{a-zA-Z}={A-Za-z}'
 zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
@@ -82,24 +103,53 @@ zstyle ':completion:*' group-name ''
 zstyle ':fzf-tab:*' fzf-command fzf
 zstyle ':fzf-tab:*' switch-group '<' '>'
 
-ZSH_AUTOSUGGEST_STRATEGY=(history completion)
+# history only: the completion strategy runs the full completer on every keystroke.
+ZSH_AUTOSUGGEST_STRATEGY=(history)
 ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=8'
 HISTORY_SUBSTRING_SEARCH_ENSURE_UNIQUE=1
 HISTORY_SUBSTRING_SEARCH_HIGHLIGHT_FOUND='fg=green,bold'
 HISTORY_SUBSTRING_SEARCH_HIGHLIGHT_NOT_FOUND='fg=red,bold'
 
+# One completion init. If something else already ran compinit, do not run it
+# again — a second uncached pass is the bulk of startup. fzf-tab self-enables.
+typeset -g ZSH_COMPDUMP="${ZSH_COMPDUMP:-${XDG_CACHE_HOME:-$HOME/.cache}/zsh/zcompdump}"
+if (( ! $+_comps )); then
+  [[ -d $ZSH_COMPDUMP:h ]] || mkdir -p $ZSH_COMPDUMP:h
+  autoload -Uz compinit
+  if [[ -r $ZSH_COMPDUMP ]]; then
+    compinit -C -d $ZSH_COMPDUMP
+  else
+    compinit -i -d $ZSH_COMPDUMP
+  fi
+fi
+
 if [[ -r ${ZISH_PLUGIN_BUNDLE:-} ]]; then
   source "${ZISH_PLUGIN_BUNDLE}"
-  # ez-compinit defers real compinit to precmd; fzf-tab needs it now.
-  if (( $+functions[run-compinit] )); then
-    run-compinit
-  else
-    autoload -Uz compinit && compinit -C
-  fi
-  (( $+functions[enable-fzf-tab] )) && enable-fzf-tab
 else
   print -u2 'zish: missing plugin bundle; run the installer again'
-  autoload -Uz compinit && compinit -C
+fi
+
+# zsh-abbr: 60KB + filesystem job queue. Load only when used.
+_zish_abbr_plugin=$ZISH_DIR/plugins/github.com/olets/zsh-abbr/zsh-abbr.plugin.zsh
+_zish_load_abbr() {
+  [[ -r $_zish_abbr_plugin ]] || return 1
+  fpath+=( ${_zish_abbr_plugin:h} ${_zish_abbr_plugin:h}/completions )
+  # zsh-abbr's trailing unfunction -m returns 1; ignore it.
+  source $_zish_abbr_plugin || true
+  (( $+functions[abbr-expand] || $+widgets[abbr-expand] ))
+}
+_zish_abbr_lazy() {
+  unalias abbr 2>/dev/null
+  unfunction _zish_abbr_lazy 2>/dev/null
+  _zish_load_abbr || { print -u2 'zish: zsh-abbr missing'; return 1 }
+  abbr "$@"
+}
+alias abbr=_zish_abbr_lazy
+if [[ -s ${XDG_CONFIG_HOME:-$HOME/.config}/zsh-abbr/user-abbreviations ||
+      -s ${XDG_CONFIG_HOME:-$HOME/.config}/zsh/abbreviations ]]; then
+  unalias abbr 2>/dev/null
+  unfunction _zish_abbr_lazy 2>/dev/null
+  _zish_load_abbr
 fi
 
 # ---- directory history (prevd / nextd / cdh) ---------------------------------
@@ -202,16 +252,73 @@ bindkey '^[[1;5C' forward-word
 (( $+widgets[_zish_history] )) && bindkey '^R' _zish_history
 
 # ---- aliases ----------------------------------------------------------------
-if command ls --color=auto / >/dev/null 2>&1; then
-  alias ls='ls --color=auto' ll='ls -lah --color=auto' la='ls -A --color=auto' l='ls -CF --color=auto'
-elif command ls -G / >/dev/null 2>&1; then
-  alias ls='ls -G' ll='ls -lahG' la='ls -AG' l='ls -CFG'
-else
-  alias ll='ls -lah' la='ls -A' l='ls -CF'
+case $OSTYPE in
+  darwin*|freebsd*)
+    alias ls='ls -G' ll='ls -lahG' la='ls -AG' l='ls -CFG'
+    ;;
+  *)
+    if command ls --color=auto / >/dev/null 2>&1; then
+      alias ls='ls --color=auto' ll='ls -lah --color=auto' la='ls -A --color=auto' l='ls -CF --color=auto'
+    else
+      alias ll='ls -lah' la='ls -A' l='ls -CF'
+    fi
+    ;;
+esac
+
+# ---- update notice (zsh; do not spawn bash on every startup) ----------------
+_zish_notice() {
+  emulate -L zsh
+  setopt extendedglob
+  local -A st ck
+  local line now age
+  [[ -r $ZISH_DIR/state ]] || return 0
+  for line in "${(@f)$(<$ZISH_DIR/state)}"; do
+    [[ $line == [a-z_]##=* ]] && st[${line%%=*}]=${line#*=}
+  done
+  [[ -n $st[version] ]] || return 0
+  if [[ -r $ZISH_DIR/update-check ]]; then
+    for line in "${(@f)$(<$ZISH_DIR/update-check)}"; do
+      [[ $line == [a-z_]##=* ]] && ck[${line%%=*}]=${line#*=}
+    done
+  fi
+  if [[ -n $ck[remote] && $ck[remote] != $st[version] ]]; then
+    if [[ -t 2 ]]; then
+      print -u2 -- "\033[1;33mzish update available:\033[0m ${st[version]} → ${ck[remote]}   run \033[1mzish update\033[0m"
+    else
+      print -u2 -- "zish update available: ${st[version]} → ${ck[remote]}   run zish update"
+    fi
+  fi
+  zmodload -F zsh/datetime p:EPOCHSECONDS 2>/dev/null
+  now=${EPOCHSECONDS:-0}
+  age=$(( now - ${ck[checked_at]:-0} ))
+  if [[ -z $ck[checked_at] ]] || (( age >= 86400 || age < 0 )); then
+    if (( $+commands[zish] )); then
+      (command zish check --quiet >/dev/null 2>&1 &)
+    fi
+  fi
+}
+if [[ -o interactive && -t 1 ]]; then
+  _zish_notice
 fi
 
-# ---- update notice ----------------------------------------------------------
-# Cached; a background check runs at most once a day. Never blocks startup.
-if [[ -o interactive && -t 1 ]] && (( $+commands[zish] )); then
-  zish notice
-fi
+# Byte-compile plugins when .zwc is missing or stale. Fork only if work remains.
+() {
+  emulate -L zsh
+  local -a needs
+  local f
+  for f in \
+    $ZISH_DIR/config.zsh \
+    $ZISH_DIR/plugins.zsh \
+    $ZISH_DIR/plugins/github.com/Aloxaf/fzf-tab/fzf-tab.zsh \
+    $ZISH_DIR/plugins/github.com/zsh-users/zsh-autosuggestions/zsh-autosuggestions.zsh \
+    $ZISH_DIR/plugins/github.com/zsh-users/zsh-history-substring-search/zsh-history-substring-search.zsh \
+    $ZISH_DIR/plugins/github.com/zsh-users/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh \
+    $ZISH_DIR/plugins/github.com/zsh-users/zsh-syntax-highlighting/highlighters/main/main-highlighter.zsh
+  do
+    [[ -r $f && ( ! -s $f.zwc || $f -nt $f.zwc ) ]] && needs+=$f
+  done
+  (( $#needs )) || return
+  {
+    for f in $needs; do zcompile -R -- $f 2>/dev/null; done
+  } &!
+}

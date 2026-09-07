@@ -2,12 +2,13 @@
 # Latest from network on each install (no commit pins).
 
 zsh-users/zsh-completions kind:fpath path:src
-mattmc3/ez-compinit
+# ez-compinit omitted: one cached compinit in config.zsh
 Aloxaf/fzf-tab
 
 zsh-users/zsh-autosuggestions
 zsh-users/zsh-history-substring-search
-olets/zsh-abbr
+# Clone only; sourced lazily from config.zsh when abbreviations exist or `abbr` runs.
+olets/zsh-abbr kind:clone
 
 # Syntax highlighting must be loaded last.
 zsh-users/zsh-syntax-highlighting
