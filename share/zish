@@ -170,7 +170,7 @@ cmd_notice() {
 }
 
 theme_current() {
-  local n
+  local n=""
   if [[ -r "$THEME_FILE" ]]; then
     n="$(tr -d '[:space:]' <"$THEME_FILE")"
   fi
@@ -339,7 +339,7 @@ cmd_theme() {
 }
 
 emoji_current() {
-  local s
+  local s=""
   if [[ -r "$EMOJI_FILE" ]]; then
     s="$(tr -d '\n\r' <"$EMOJI_FILE")"
     s="${s#"${s%%[![:space:]]*}"}"
