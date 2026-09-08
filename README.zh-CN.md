@@ -44,8 +44,9 @@ bash install-fishlike-zsh.sh
 zish version
 zish check       # 立刻对比 GitHub 上的版本
 zish update      # 从网络拉最新；.zshrc 里 loader 下面的内容会留着
-zish theme       # 列出 prompt 配色
+zish theme       # 交互选择（fzf，没有则数字菜单）
 zish theme nord  # 只改这台机器，update 不会冲掉
+zish theme list  # 只打印，不挑选
 zish uninstall
 ```
 

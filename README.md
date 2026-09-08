@@ -44,8 +44,9 @@ bash install-fishlike-zsh.sh
 zish version
 zish check       # compare with GitHub now
 zish update      # latest from the network; keeps .zshrc outside the loader
-zish theme       # list prompt palettes
-zish theme nord  # this machine only; kept across updates
+zish theme       # interactive picker (fzf, or a numbered menu)
+zish theme nord  # set this machine; kept across updates
+zish theme list  # print palettes without picking
 zish uninstall
 ```
 

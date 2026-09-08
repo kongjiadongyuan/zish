@@ -19,7 +19,7 @@ Usage: zish <command>
   version      Print installed version
   check        Check the remote version now
   update       Fetch latest zish from the network and reinstall
-  theme        List prompt themes, or: zish theme <name>
+  theme        Interactive picker (TTY), or: zish theme <name>
   uninstall    Remove zish (keeps history and .zshrc outside the loader)
   help         This help
 EOF
@@ -215,28 +215,11 @@ theme_preview() {
   return 1
 }
 
-cmd_theme() {
-  local name="${1:-}" cur f
-  cur="$(theme_current)"
-  if [[ -z "$name" || "$name" == list ]]; then
-    [[ -r "$THEMES_TXT" ]] || { printf 'zish: missing %s\n' "$THEMES_TXT" >&2; exit 1; }
-    printf 'current: %s\n\n' "$cur"
-    while IFS= read -r line || [[ -n "$line" ]]; do
-      [[ -z "$line" || "$line" == \#* ]] && continue
-      set -- $line
-      [[ -n "$1" ]] || continue
-      if [[ "$1" == "$cur" ]]; then
-        printf '* %-16s ' "$1"
-      else
-        printf '  %-16s ' "$1"
-      fi
-      theme_preview "$1"
-    done <"$THEMES_TXT"
-    return 0
-  fi
+theme_apply() {
+  local name="$1"
   if ! theme_fields "$name" >/dev/null; then
     printf 'zish: unknown theme: %s\n' "$name" >&2
-    printf 'run: zish theme\n' >&2
+    printf 'run: zish theme list\n' >&2
     exit 1
   fi
   mkdir -p "$ZISH_DIR"
@@ -246,6 +229,111 @@ cmd_theme() {
   printf '  '
   theme_preview "$name"
   printf 'open a new terminal, or: exec zsh -l\n'
+}
+
+theme_list() {
+  local cur line mark
+  cur="$(theme_current)"
+  [[ -r "$THEMES_TXT" ]] || { printf 'zish: missing %s\n' "$THEMES_TXT" >&2; exit 1; }
+  printf 'current: %s\n\n' "$cur"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    set -- $line
+    [[ -n "$1" ]] || continue
+    if [[ "$1" == "$cur" ]]; then mark='*'; else mark=' '; fi
+    printf '%s %-16s ' "$mark" "$1"
+    theme_preview "$1"
+  done <"$THEMES_TXT"
+}
+
+theme_names() {
+  local line
+  [[ -r "$THEMES_TXT" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    set -- $line
+    [[ -n "$1" ]] && printf '%s\n' "$1"
+  done <"$THEMES_TXT"
+}
+
+theme_fzf() {
+  local bin="$ZISH_DIR/bin/fzf" cur picked self
+  [[ -x "$bin" ]] || bin="$(command -v fzf 2>/dev/null || true)"
+  [[ -n "$bin" && -x "$bin" ]] || return 1
+  cur="$(theme_current)"
+  self="$0"
+  picked="$(
+    theme_names | "$bin" \
+      --ansi --reverse --height=40% \
+      --prompt='theme> ' \
+      --header="current: ${cur}   enter to apply, esc to cancel" \
+      --preview="$self theme --preview {}" \
+      --preview-window=down,3,wrap
+  )" || return 1
+  [[ -n "$picked" ]] || return 1
+  theme_apply "$picked"
+}
+
+theme_menu() {
+  local cur line i=0 n pick
+  local -a names
+  cur="$(theme_current)"
+  [[ -r "$THEMES_TXT" ]] || { printf 'zish: missing %s\n' "$THEMES_TXT" >&2; exit 1; }
+  printf 'current: %s\n\n' "$cur"
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    set -- $line
+    [[ -n "$1" ]] || continue
+    i=$((i + 1))
+    names[$i]=$1
+    if [[ "$1" == "$cur" ]]; then
+      printf '%2d) * %-16s ' "$i" "$1"
+    else
+      printf '%2d)   %-16s ' "$i" "$1"
+    fi
+    theme_preview "$1"
+  done <"$THEMES_TXT"
+  printf '\nnumber (empty cancels): '
+  IFS= read -r n || return 1
+  [[ -n "$n" ]] || { printf 'cancelled\n'; return 1; }
+  [[ "$n" == [1-9] || "$n" == [1-9][0-9] ]] || { printf 'zish: not a number\n' >&2; return 1; }
+  pick="${names[$n]:-}"
+  [[ -n "$pick" ]] || { printf 'zish: out of range\n' >&2; return 1; }
+  theme_apply "$pick"
+}
+
+cmd_theme() {
+  local name="${1:-}"
+  case "$name" in
+    --preview)
+      theme_preview "${2:-}"
+      return
+      ;;
+    list|-l|--list)
+      theme_list
+      return
+      ;;
+    '')
+      if [[ -t 0 && -t 1 ]]; then
+        if theme_fzf; then
+          return
+        fi
+        # No fzf, or fzf not usable: numbered menu.
+        local bin="$ZISH_DIR/bin/fzf"
+        [[ -x "$bin" ]] || bin="$(command -v fzf 2>/dev/null || true)"
+        if [[ -n "$bin" && -x "$bin" ]]; then
+          return 1
+        fi
+        theme_menu
+      else
+        theme_list
+      fi
+      return
+      ;;
+    *)
+      theme_apply "$name"
+      ;;
+  esac
 }
 
 cmd_update() {
