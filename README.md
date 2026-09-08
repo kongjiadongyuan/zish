@@ -49,6 +49,7 @@ zish theme nord  # set this machine; kept across updates
 zish theme list  # print palettes without picking
 zish emoji       # pick a badge for this machine (💻 🐧 🏠 …)
 zish emoji 💻    # or type any emoji; kept across updates
+# theme/emoji apply on the next prompt in this shell
 zish uninstall
 ```
 

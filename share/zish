@@ -230,7 +230,6 @@ theme_apply() {
   printf 'zish theme: %s\n' "$name"
   printf '  '
   theme_preview "$name"
-  printf 'open a new terminal, or: exec zsh -l\n'
 }
 
 theme_list() {
@@ -394,7 +393,6 @@ emoji_apply() {
     chmod 0600 "$EMOJI_FILE"
     printf 'zish emoji: %s\n' "$glyph"
   fi
-  printf 'open a new terminal, or: exec zsh -l\n'
 }
 
 emoji_from_catalog() {

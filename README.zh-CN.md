@@ -49,6 +49,7 @@ zish theme nord  # 只改这台机器，update 不会冲掉
 zish theme list  # 只打印，不挑选
 zish emoji       # 给这台机器选一个角标（💻 🐧 🏠 …）
 zish emoji 💻    # 或任意 emoji；update 不会冲掉
+# theme / emoji 在当前 shell 的下一行 prompt 就会生效
 zish uninstall
 ```
 

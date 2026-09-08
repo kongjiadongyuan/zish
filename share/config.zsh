@@ -70,6 +70,7 @@ typeset -g ZISH_EMOJI=
 _zish_load_emoji() {
   emulate -L zsh
   local s
+  ZISH_EMOJI=
   [[ -r ${ZISH_DIR:-}/emoji ]] || return
   s=${$(<${ZISH_DIR}/emoji)#[[:space:]]#}
   s=${s%[[:space:]]#}
@@ -77,6 +78,25 @@ _zish_load_emoji() {
   ZISH_EMOJI=$s
 }
 _zish_load_emoji
+
+# zish is a bash CLI; wrap it so theme/emoji take effect on the next prompt.
+zish() {
+  local cmd=${1:-} st
+  if [[ -n ${ZISH_BIN:-} && -x $ZISH_BIN/zish ]]; then
+    "$ZISH_BIN/zish" "$@"
+  else
+    command zish "$@"
+  fi
+  st=$?
+  case $cmd in
+    theme|emoji)
+      _zish_load_theme
+      _zish_load_emoji
+      ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE="fg=#$ZISH_C_SUGGEST"
+      ;;
+  esac
+  return $st
+}
 
 # ---- prompt -----------------------------------------------------------------
 # Read .git/HEAD instead of spawning git. Walk parents with [[ -e ]], not git.
