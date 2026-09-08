@@ -3,6 +3,10 @@
 # Prompt roles only. Selection lives in $ZISH_DIR/theme (not overwritten).
 default         00afd7  d7af00  5fd75f  d787d7  ff5f5f  808080
 classic         5faf00  a8a8a8  5faf00  af5faf  d70000  808080
+signal          00d7ff  ff005f  ffd700  d787ff  ff0000  808080
+neon            00ffff  ff00af  00ff5f  ffff00  ff005f  5f5f5f
+fire            ffaf00  ff5f00  87d700  d75fff  ff0000  875f00
+ice             5fafff  00d7ff  afffff  af87ff  5f87ff  5f5f87
 nord            88c0d0  81a1c1  a3be8c  b48ead  bf616a  4c566a
 dracula         8be9fd  bd93f9  50fa7b  ff79c6  ff5555  6272a4
 mocha           89b4fa  cba6f7  a6e3a1  f5c2e7  f38ba8  7f849c

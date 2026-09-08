@@ -47,6 +47,8 @@ zish update      # latest from the network; keeps .zshrc outside the loader
 zish theme       # interactive picker (fzf, or a numbered menu)
 zish theme nord  # set this machine; kept across updates
 zish theme list  # print palettes without picking
+zish emoji       # pick a badge for this machine (💻 🐧 🏠 …)
+zish emoji 💻    # or type any emoji; kept across updates
 zish uninstall
 ```
 

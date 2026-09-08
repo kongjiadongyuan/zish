@@ -66,6 +66,18 @@ _zish_load_theme() {
 }
 _zish_load_theme
 
+typeset -g ZISH_EMOJI=
+_zish_load_emoji() {
+  emulate -L zsh
+  local s
+  [[ -r ${ZISH_DIR:-}/emoji ]] || return
+  s=${$(<${ZISH_DIR}/emoji)#[[:space:]]#}
+  s=${s%[[:space:]]#}
+  [[ $s == none || $s == off || $s == clear ]] && s=
+  ZISH_EMOJI=$s
+}
+_zish_load_emoji
+
 # ---- prompt -----------------------------------------------------------------
 # Read .git/HEAD instead of spawning git. Walk parents with [[ -e ]], not git.
 _zish_git_branch() {
@@ -98,7 +110,8 @@ _zish_prompt() {
   # Capture exit status first. Do not name locals "status" — in zsh that is a
   # read-only special parameter ($?); assigning it errors and leaves $status=1
   # glued onto the path in PROMPT (looks like "~1").
-  local last=$? branch short gitseg errseg
+  local last=$? branch short gitseg errseg emoseg
+  [[ -n $ZISH_EMOJI ]] && emoseg="${ZISH_EMOJI} "
   short="${PWD/#$HOME/~}"
   if [[ $short != / && $short == */* ]]; then
     local -a parts=("${(@s:/:)short}")
@@ -117,7 +130,7 @@ _zish_prompt() {
     gitseg=" %F{#$ZISH_C_GIT}(${REPLY})%f"
   fi
   (( last )) && errseg=" %B%F{#$ZISH_C_ERROR}[${last}]%f%b"
-  PROMPT="%B%F{#$ZISH_C_USER}%n%b%f@%F{#$ZISH_C_HOST}%m%f %F{#$ZISH_C_PATH}${short}%f${gitseg}${errseg}%(!.#.>) "
+  PROMPT="${emoseg}%B%F{#$ZISH_C_USER}%n%b%f@%F{#$ZISH_C_HOST}%m%f %F{#$ZISH_C_PATH}${short}%f${gitseg}${errseg}%(!.#.>) "
 }
 precmd_functions=(_zish_prompt ${precmd_functions:#_zish_prompt})
 

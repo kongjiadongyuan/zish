@@ -11,6 +11,7 @@ DEFAULT_REF="main"
 
 THEME_FILE="${ZISH_DIR}/theme"
 THEMES_TXT="${ZISH_DIR}/themes.txt"
+EMOJI_FILE="${ZISH_DIR}/emoji"
 
 usage() {
   cat <<EOF
@@ -20,6 +21,7 @@ Usage: zish <command>
   check        Check the remote version now
   update       Fetch latest zish from the network and reinstall
   theme        Interactive picker (TTY), or: zish theme <name>
+  emoji        Machine badge in the prompt, or: zish emoji 💻
   uninstall    Remove zish (keeps history and .zshrc outside the loader)
   help         This help
 EOF
@@ -336,6 +338,137 @@ cmd_theme() {
   esac
 }
 
+emoji_current() {
+  local s
+  if [[ -r "$EMOJI_FILE" ]]; then
+    s="$(tr -d '\n\r' <"$EMOJI_FILE")"
+    s="${s#"${s%%[![:space:]]*}"}"
+    s="${s%"${s##*[![:space:]]}"}"
+  fi
+  printf '%s\n' "$s"
+}
+
+emoji_catalog() {
+  cat <<'EOF'
+none	(no badge)
+💻	laptop
+🖥️	desktop
+🍎	mac
+🐧	linux
+🏠	home
+☁️	cloud
+🗄️	server
+🔧	toolbox
+🚀	rocket
+🐱	cat
+🐸	frog
+🐙	octopus
+🦀	crab
+🐝	bee
+🦊	fox
+🐺	wolf
+🐻	bear
+🔥	fire
+❄️	ice
+🌙	moon
+⭐	star
+💎	gem
+⚡	zap
+🌊	wave
+🍀	clover
+🎃	pumpkin
+🧿	nazar
+🧩	puzzle
+🎯	target
+EOF
+}
+
+emoji_apply() {
+  local glyph="$1"
+  mkdir -p "$ZISH_DIR"
+  if [[ -z "$glyph" || "$glyph" == none || "$glyph" == off || "$glyph" == clear ]]; then
+    rm -f -- "$EMOJI_FILE"
+    printf 'zish emoji: (none)\n'
+  else
+    printf '%s\n' "$glyph" >"$EMOJI_FILE"
+    chmod 0600 "$EMOJI_FILE"
+    printf 'zish emoji: %s\n' "$glyph"
+  fi
+  printf 'open a new terminal, or: exec zsh -l\n'
+}
+
+emoji_from_catalog() {
+  local want="$1" glyph label
+  while IFS=$'\t' read -r glyph label || [[ -n "$glyph" ]]; do
+    [[ "$glyph" == "$want" || "$label" == "$want" ]] && { printf '%s\n' "$glyph"; return 0; }
+  done < <(emoji_catalog)
+  return 1
+}
+
+emoji_fzf() {
+  local bin="$ZISH_DIR/bin/fzf" picked glyph cur
+  [[ -x "$bin" ]] || bin="$(command -v fzf 2>/dev/null || true)"
+  [[ -n "$bin" && -x "$bin" ]] || return 1
+  cur="$(emoji_current)"
+  picked="$(
+    emoji_catalog | "$bin" \
+      --ansi --reverse --height=40% \
+      --prompt='emoji> ' \
+      --header="current: ${cur:-none}   enter to apply, esc to cancel   or: zish emoji 💻" \
+      --delimiter=$'\t' --with-nth=1,2
+  )" || return 1
+  [[ -n "$picked" ]] || return 1
+  glyph="${picked%%$'\t'*}"
+  emoji_apply "$glyph"
+}
+
+emoji_menu() {
+  local line i=0 n pick glyph
+  local -a glyphs
+  printf 'current: %s\n\n' "$(emoji_current)"
+  while IFS=$'\t' read -r glyph _ || [[ -n "$glyph" ]]; do
+    i=$((i + 1))
+    glyphs[$i]=$glyph
+    printf '%2d) %s\n' "$i" "$glyph"
+  done < <(emoji_catalog)
+  printf '\nnumber (empty cancels): '
+  IFS= read -r n || return 1
+  [[ -n "$n" ]] || { printf 'cancelled\n'; return 1; }
+  [[ "$n" == [1-9] || "$n" == [1-9][0-9] ]] || { printf 'zish: not a number\n' >&2; return 1; }
+  pick="${glyphs[$n]:-}"
+  [[ -n "$pick" ]] || { printf 'zish: out of range\n' >&2; return 1; }
+  emoji_apply "$pick"
+}
+
+cmd_emoji() {
+  local arg="${1:-}" mapped
+  case "$arg" in
+    '')
+      if [[ -t 0 && -t 1 ]]; then
+        if emoji_fzf; then
+          return
+        fi
+        local bin="$ZISH_DIR/bin/fzf"
+        [[ -x "$bin" ]] || bin="$(command -v fzf 2>/dev/null || true)"
+        if [[ -n "$bin" && -x "$bin" ]]; then
+          return 1
+        fi
+        emoji_menu
+      else
+        printf 'current: %s\n' "$(emoji_current)"
+        emoji_catalog
+      fi
+      ;;
+    *)
+      if mapped="$(emoji_from_catalog "$arg")"; then
+        emoji_apply "$mapped"
+      else
+        emoji_apply "$arg"
+      fi
+      ;;
+  esac
+}
+
 cmd_update() {
   local inst cleanup
   inst="$(fetch_installer)"
@@ -371,6 +504,7 @@ case "$cmd" in
   check) cmd_check "$@" ;;
   notice) cmd_notice ;;
   theme) cmd_theme "$@" ;;
+  emoji) cmd_emoji "$@" ;;
   update|upgrade) cmd_update ;;
   uninstall) cmd_uninstall "$@" ;;
   help|-h|--help) usage ;;

@@ -47,6 +47,8 @@ zish update      # 从网络拉最新；.zshrc 里 loader 下面的内容会留�
 zish theme       # 交互选择（fzf，没有则数字菜单）
 zish theme nord  # 只改这台机器，update 不会冲掉
 zish theme list  # 只打印，不挑选
+zish emoji       # 给这台机器选一个角标（💻 🐧 🏠 …）
+zish emoji 💻    # 或任意 emoji；update 不会冲掉
 zish uninstall
 ```
 
