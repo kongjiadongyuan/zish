@@ -37,6 +37,35 @@ fi
 export CLICOLOR="${CLICOLOR:-1}"
 export LSCOLORS="${LSCOLORS:-exfxcxdxbxegedabagacad}"
 
+# ---- theme (zish theme <name>; selection in $ZISH_DIR/theme) ----------------
+typeset -g ZISH_THEME=default
+typeset -g ZISH_C_USER=00afd7 ZISH_C_HOST=d7af00 ZISH_C_PATH=5fd75f
+typeset -g ZISH_C_GIT=d787d7 ZISH_C_ERROR=ff5f5f ZISH_C_SUGGEST=808080
+
+_zish_load_theme() {
+  emulate -L zsh
+  local name line
+  local -a f
+  if [[ -r ${ZISH_DIR:-}/theme ]]; then
+    name=${$(<${ZISH_DIR}/theme)//[[:space:]]/}
+  fi
+  [[ -n $name ]] || name=default
+  if [[ -r ${ZISH_DIR:-}/themes.txt ]]; then
+    while IFS= read -r line; do
+      [[ -z $line || $line == \#* ]] && continue
+      f=(${=line})
+      (( $#f >= 7 )) || continue
+      if [[ $f[1] == $name ]]; then
+        ZISH_C_USER=$f[2] ZISH_C_HOST=$f[3] ZISH_C_PATH=$f[4]
+        ZISH_C_GIT=$f[5] ZISH_C_ERROR=$f[6] ZISH_C_SUGGEST=$f[7]
+        ZISH_THEME=$name
+        break
+      fi
+    done < ${ZISH_DIR}/themes.txt
+  fi
+}
+_zish_load_theme
+
 # ---- prompt -----------------------------------------------------------------
 # Read .git/HEAD instead of spawning git. Walk parents with [[ -e ]], not git.
 _zish_git_branch() {
@@ -85,10 +114,10 @@ _zish_prompt() {
     short=${(j:/:)parts}
   fi
   if _zish_git_branch; then
-    gitseg=" %F{magenta}(${REPLY})%f"
+    gitseg=" %F{#$ZISH_C_GIT}(${REPLY})%f"
   fi
-  (( last )) && errseg=" %B%F{red}[${last}]%f%b"
-  PROMPT="%B%F{green}%n%b%f@%m %F{green}${short}%f${gitseg}${errseg}%(!.#.>) "
+  (( last )) && errseg=" %B%F{#$ZISH_C_ERROR}[${last}]%f%b"
+  PROMPT="%B%F{#$ZISH_C_USER}%n%b%f@%F{#$ZISH_C_HOST}%m%f %F{#$ZISH_C_PATH}${short}%f${gitseg}${errseg}%(!.#.>) "
 }
 precmd_functions=(_zish_prompt ${precmd_functions:#_zish_prompt})
 
@@ -105,7 +134,7 @@ zstyle ':fzf-tab:*' switch-group '<' '>'
 
 # history only: the completion strategy runs the full completer on every keystroke.
 ZSH_AUTOSUGGEST_STRATEGY=(history)
-ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE='fg=8'
+ZSH_AUTOSUGGEST_HIGHLIGHT_STYLE="fg=#$ZISH_C_SUGGEST"
 HISTORY_SUBSTRING_SEARCH_ENSURE_UNIQUE=1
 HISTORY_SUBSTRING_SEARCH_HIGHLIGHT_FOUND='fg=green,bold'
 HISTORY_SUBSTRING_SEARCH_HIGHLIGHT_NOT_FOUND='fg=red,bold'

@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-INSTALLER_VERSION="3.5.1"
+INSTALLER_VERSION="3.6.0"
 MIN_ZSH_VERSION="5.4.2"
 ZISH_REPO="${ZISH_REPO:-kongjiadongyuan/zish}"
 ZISH_REF="${ZISH_REF:-main}"
@@ -342,20 +342,22 @@ download() {
 # ---- share payload (latest from network, or local checkout) -----------------
 resolve_share() {
   local dir src
-  if [[ -n "${ZISH_SHARE_DIR:-}" && -f "$ZISH_SHARE_DIR/config.zsh" && -f "$ZISH_SHARE_DIR/plugins.txt" && -f "$ZISH_SHARE_DIR/zish" ]]; then
+  if [[ -n "${ZISH_SHARE_DIR:-}" && -f "$ZISH_SHARE_DIR/config.zsh" && -f "$ZISH_SHARE_DIR/plugins.txt" && -f "$ZISH_SHARE_DIR/zish" && -f "$ZISH_SHARE_DIR/themes.txt" ]]; then
     SHARE_CONFIG_SRC="$ZISH_SHARE_DIR/config.zsh"
     SHARE_PLUGINS_SRC="$ZISH_SHARE_DIR/plugins.txt"
     SHARE_ZISH_SRC="$ZISH_SHARE_DIR/zish"
+    SHARE_THEMES_SRC="$ZISH_SHARE_DIR/themes.txt"
     ok "using ZISH_SHARE_DIR"
     return 0
   fi
   src="${BASH_SOURCE[0]:-}"
   if [[ -n "$src" && -f "$src" ]]; then
     dir="$(cd "$(dirname "$src")" && pwd)/share"
-    if [[ -f "$dir/config.zsh" && -f "$dir/plugins.txt" && -f "$dir/zish" ]]; then
+    if [[ -f "$dir/config.zsh" && -f "$dir/plugins.txt" && -f "$dir/zish" && -f "$dir/themes.txt" ]]; then
       SHARE_CONFIG_SRC="$dir/config.zsh"
       SHARE_PLUGINS_SRC="$dir/plugins.txt"
       SHARE_ZISH_SRC="$dir/zish"
+      SHARE_THEMES_SRC="$dir/themes.txt"
       ok "using local share/: $dir"
       return 0
     fi
@@ -366,6 +368,7 @@ resolve_share() {
     SHARE_CONFIG_SRC=""
     SHARE_PLUGINS_SRC=""
     SHARE_ZISH_SRC=""
+    SHARE_THEMES_SRC=""
     return 0
   fi
   local tmp
@@ -374,9 +377,11 @@ resolve_share() {
   download "$SHARE_BASE/config.zsh" "$tmp/config.zsh"
   download "$SHARE_BASE/plugins.txt" "$tmp/plugins.txt"
   download "$SHARE_BASE/zish" "$tmp/zish"
+  download "$SHARE_BASE/themes.txt" "$tmp/themes.txt"
   SHARE_CONFIG_SRC="$tmp/config.zsh"
   SHARE_PLUGINS_SRC="$tmp/plugins.txt"
   SHARE_ZISH_SRC="$tmp/zish"
+  SHARE_THEMES_SRC="$tmp/themes.txt"
   ok "share payload downloaded"
 }
 
@@ -386,13 +391,15 @@ install_share_files() {
     log "would write $ZISH_CONFIG + plugins.txt from network"
     return 0
   fi
-  local cfg plugs env out
+  local cfg plugs themes env out
   cfg="$(cat "$SHARE_CONFIG_SRC"; printf '\034')"; cfg="${cfg%$'\034'}"
   plugs="$(cat "$SHARE_PLUGINS_SRC"; printf '\034')"; plugs="${plugs%$'\034'}"
+  themes="$(cat "$SHARE_THEMES_SRC"; printf '\034')"; themes="${themes%$'\034'}"
   if [[ "$cfg" == "$MANAGED_MARKER"$'\n'* ]]; then
     cfg="${cfg#"$MANAGED_MARKER"$'\n'}"
   fi
   [[ "$plugs" == "$MANAGED_MARKER"* ]] || plugs="$MANAGED_MARKER"$'\n'"$plugs"
+  [[ "$themes" == "$MANAGED_MARKER"* ]] || themes="$MANAGED_MARKER"$'\n'"$themes"
 
   env="$(
     printf '%s\n' "$MANAGED_MARKER"
@@ -407,6 +414,7 @@ install_share_files() {
   out="${env}"$'\n'"${cfg}"
   write_if_changed "$ZISH_CONFIG" "$out"
   write_if_changed "$ZSH_PLUGINS_TXT" "$plugs"
+  write_if_changed "$ZISH_DIR/themes.txt" "$themes"
 }
 
 install_cli() {

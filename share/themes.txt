@@ -1,0 +1,11 @@
+# Managed by zish; edits may be replaced.
+# name  user    host    path    git     error   suggest
+# Prompt roles only. Selection lives in $ZISH_DIR/theme (not overwritten).
+default         00afd7  d7af00  5fd75f  d787d7  ff5f5f  808080
+classic         5faf00  a8a8a8  5faf00  af5faf  d70000  808080
+nord            88c0d0  81a1c1  a3be8c  b48ead  bf616a  4c566a
+dracula         8be9fd  bd93f9  50fa7b  ff79c6  ff5555  6272a4
+mocha           89b4fa  cba6f7  a6e3a1  f5c2e7  f38ba8  7f849c
+solarized-dark  268bd2  2aa198  859900  6c71c4  dc322f  586e75
+gruvbox         83a598  fabd2f  b8bb26  d3869b  fb4934  928374
+tokyonight      7aa2f7  bb9af7  9ece6a  7dcfff  f7768e  565f89

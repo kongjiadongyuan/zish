@@ -23,7 +23,7 @@ bash install-fishlike-zsh.sh
 - Compact git-aware prompt
 - One directory: `~/.config/zish`
 - `.zshrc` stays a tiny loader; extra lines outside that block are kept
-- `zish version` / `zish check` / `zish update` / `zish uninstall`
+- `zish version` / `zish check` / `zish update` / `zish theme` / `zish uninstall`
 - Interactive shells notice a newer remote version (checked in the background, at most daily)
 
 ## Behavior
@@ -44,6 +44,8 @@ bash install-fishlike-zsh.sh
 zish version
 zish check       # compare with GitHub now
 zish update      # latest from the network; keeps .zshrc outside the loader
+zish theme       # list prompt palettes
+zish theme nord  # this machine only; kept across updates
 zish uninstall
 ```
 

@@ -9,6 +9,9 @@ CHECK_TTL="${ZISH_CHECK_TTL:-86400}"
 DEFAULT_REPO="kongjiadongyuan/zish"
 DEFAULT_REF="main"
 
+THEME_FILE="${ZISH_DIR}/theme"
+THEMES_TXT="${ZISH_DIR}/themes.txt"
+
 usage() {
   cat <<EOF
 Usage: zish <command>
@@ -16,6 +19,7 @@ Usage: zish <command>
   version      Print installed version
   check        Check the remote version now
   update       Fetch latest zish from the network and reinstall
+  theme        List prompt themes, or: zish theme <name>
   uninstall    Remove zish (keeps history and .zshrc outside the loader)
   help         This help
 EOF
@@ -163,6 +167,87 @@ cmd_notice() {
   return 0
 }
 
+theme_current() {
+  local n
+  if [[ -r "$THEME_FILE" ]]; then
+    n="$(tr -d '[:space:]' <"$THEME_FILE")"
+  fi
+  printf '%s\n' "${n:-default}"
+}
+
+theme_hex_fg() {
+  local h="${1#\#}"
+  printf '\033[38;2;%d;%d;%dm' \
+    "$((16#${h:0:2}))" "$((16#${h:2:2}))" "$((16#${h:4:2}))"
+}
+
+theme_fields() {
+  local name="$1" line
+  [[ -r "$THEMES_TXT" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    set -- $line
+    [[ "$1" == "$name" ]] || continue
+    (( $# >= 7 )) || return 1
+    printf '%s\n' "$@"
+    return 0
+  done <"$THEMES_TXT"
+  return 1
+}
+
+theme_preview() {
+  local name="$1" reset=$'\033[0m' bold=$'\033[1m'
+  local line user host pathc gitc err
+  [[ -r "$THEMES_TXT" ]] || return 1
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ -z "$line" || "$line" == \#* ]] && continue
+    set -- $line
+    [[ "$1" == "$name" ]] || continue
+    user=$2 host=$3 pathc=$4 gitc=$5 err=$6
+    printf '%s' "$bold$(theme_hex_fg "$user")user${reset}"
+    printf '@%s' "$(theme_hex_fg "$host")host${reset}"
+    printf ' %s' "$(theme_hex_fg "$pathc")~${reset}"
+    printf ' %s' "$(theme_hex_fg "$gitc")(main)${reset}"
+    printf ' %s' "$bold$(theme_hex_fg "$err")[1]${reset}"
+    printf '> \n'
+    return 0
+  done <"$THEMES_TXT"
+  return 1
+}
+
+cmd_theme() {
+  local name="${1:-}" cur f
+  cur="$(theme_current)"
+  if [[ -z "$name" || "$name" == list ]]; then
+    [[ -r "$THEMES_TXT" ]] || { printf 'zish: missing %s\n' "$THEMES_TXT" >&2; exit 1; }
+    printf 'current: %s\n\n' "$cur"
+    while IFS= read -r line || [[ -n "$line" ]]; do
+      [[ -z "$line" || "$line" == \#* ]] && continue
+      set -- $line
+      [[ -n "$1" ]] || continue
+      if [[ "$1" == "$cur" ]]; then
+        printf '* %-16s ' "$1"
+      else
+        printf '  %-16s ' "$1"
+      fi
+      theme_preview "$1"
+    done <"$THEMES_TXT"
+    return 0
+  fi
+  if ! theme_fields "$name" >/dev/null; then
+    printf 'zish: unknown theme: %s\n' "$name" >&2
+    printf 'run: zish theme\n' >&2
+    exit 1
+  fi
+  mkdir -p "$ZISH_DIR"
+  printf '%s\n' "$name" >"$THEME_FILE"
+  chmod 0600 "$THEME_FILE"
+  printf 'zish theme: %s\n' "$name"
+  printf '  '
+  theme_preview "$name"
+  printf 'open a new terminal, or: exec zsh -l\n'
+}
+
 cmd_update() {
   local inst cleanup
   inst="$(fetch_installer)"
@@ -197,6 +282,7 @@ case "$cmd" in
   version|-v|--version) cmd_version ;;
   check) cmd_check "$@" ;;
   notice) cmd_notice ;;
+  theme) cmd_theme "$@" ;;
   update|upgrade) cmd_update ;;
   uninstall) cmd_uninstall "$@" ;;
   help|-h|--help) usage ;;

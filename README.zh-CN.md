@@ -23,7 +23,7 @@ bash install-fishlike-zsh.sh
 - 简洁 git 提示符
 - 只占一个目录：`~/.config/zish`
 - `.zshrc` 只留一小段 loader；标记块之外的内容会保留
-- `zish version` / `zish check` / `zish update` / `zish uninstall`
+- `zish version` / `zish check` / `zish update` / `zish theme` / `zish uninstall`
 - 交互 shell 发现远程有新版本会高亮提示（后台检查，最多一天一次）
 
 ## 行为
@@ -44,6 +44,8 @@ bash install-fishlike-zsh.sh
 zish version
 zish check       # 立刻对比 GitHub 上的版本
 zish update      # 从网络拉最新；.zshrc 里 loader 下面的内容会留着
+zish theme       # 列出 prompt 配色
+zish theme nord  # 只改这台机器，update 不会冲掉
 zish uninstall
 ```
 
