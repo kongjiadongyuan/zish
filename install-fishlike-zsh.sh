@@ -16,7 +16,7 @@
 
 set -euo pipefail
 
-INSTALLER_VERSION="3.7.1"
+INSTALLER_VERSION="3.7.2"
 MIN_ZSH_VERSION="5.4.2"
 ZISH_REPO="${ZISH_REPO:-kongjiadongyuan/zish}"
 ZISH_REF="${ZISH_REF:-main}"
